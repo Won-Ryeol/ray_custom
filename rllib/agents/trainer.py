@@ -557,6 +557,7 @@ class Trainer(Trainable):
 
                 def _creator(env_context):
                     import gym
+                    import rlbench.gym
                     # Allow for PyBullet envs to be used as well (via string).
                     # This allows for doing things like
                     # `env=CartPoleContinuousBulletEnv-v0`.

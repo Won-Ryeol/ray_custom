@@ -82,8 +82,8 @@ class JsonWriter(OutputWriter):
                 self.cur_file.close()
             timestr = datetime.today().strftime("%Y-%m-%d_%H-%M-%S")
             path = os.path.join(
-                self.path, "output-{}_worker-{}_{}.json".format(
-                    timestr, self.ioctx.worker_index, self.file_index))
+                self.path, "output-{}_worker-{}_{}_{}.json".format(
+                    timestr, self.ioctx.worker_index, self.file_index, os.getpid()))
             if self.path_is_uri:
                 if smart_open is None:
                     raise ValueError(

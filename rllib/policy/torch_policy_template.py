@@ -246,10 +246,10 @@ def build_torch_policy(
                                   self.action_space, config)
 
             # Perform test runs through postprocessing- and loss functions.
-            self._initialize_loss_from_dummy_batch(
-                auto_remove_unneeded_view_reqs=True,
-                stats_fn=stats_fn,
-            )
+            # self._initialize_loss_from_dummy_batch(
+            #     auto_remove_unneeded_view_reqs=True,
+            #     stats_fn=stats_fn,
+            # )
 
             if _after_loss_init:
                 _after_loss_init(self, obs_space, action_space, config)

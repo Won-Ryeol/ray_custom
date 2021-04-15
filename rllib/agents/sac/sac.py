@@ -39,7 +39,7 @@ DEFAULT_CONFIG = with_common_config({
     # Use a e.g. conv2D state preprocessing network before concatenating the
     # resulting (feature) vector with the action input for the input to
     # the Q-networks.
-    "use_state_preprocessor": False,
+    "use_state_preprocessor": True,
     # Model options for the Q network(s).
     "Q_model": {
         "fcnet_activation": "relu",

@@ -1,6 +1,7 @@
 import numpy as np
 from typing import Any, List, Tuple
-from ray.rllib.models.torch.modules.reshape import Reshape
+#from ray.rllib.models.torch.modules.reshape import Reshape
+from ray.rllib.models.torch.misc import Reshape
 from ray.rllib.models.torch.torch_modelv2 import TorchModelV2
 from ray.rllib.utils.framework import try_import_torch
 from ray.rllib.utils.framework import TensorType
@@ -108,7 +109,7 @@ class ConvDecoder(nn.Module):
 
     def forward(self, x):
         # x is [batch, hor_length, input_size]
-        orig_shape = list(x.size())
+        orig_shape = x.size()
         x = self.model(x)
 
         reshape_size = orig_shape[:-1] + self.shape
