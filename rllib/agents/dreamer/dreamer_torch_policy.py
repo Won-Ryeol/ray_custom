@@ -50,13 +50,15 @@ def compute_dreamer_loss(obs,
     device = (torch.device("cuda")
               if torch.cuda.is_available() else torch.device("cpu"))
 
+    # TODO (wrkwak): 
+
     # PlaNET Model Loss
-    latent = model.encoder(obs)
+    latent = model.encoder(obs.permute(0,1,4,2,3))
     post, prior = model.dynamics.observe(latent, action)
     features = model.dynamics.get_feature(post)
     image_pred = model.decoder(features)
     reward_pred = model.reward(features)
-    image_loss = -torch.mean(image_pred.log_prob(obs))
+    image_loss = -torch.mean(image_pred.log_prob(obs.permute(0,1,4,2,3)))
     reward_loss = -torch.mean(reward_pred.log_prob(reward))
     prior_dist = model.dynamics.get_dist(prior[0], prior[1])
     post_dist = model.dynamics.get_dist(post[0], post[1])
@@ -97,7 +99,7 @@ def compute_dreamer_loss(obs,
 
     log_gif = None
     if log:
-        log_gif = log_summary(obs, action, latent, image_pred, model)
+        log_gif = log_summary(obs.permute(0,1,4,2,3), action, latent, image_pred, model)
 
     return_dict = {
         "model_loss": model_loss,
@@ -136,14 +138,15 @@ def lambda_return(reward, value, pcont, bootstrap, lambda_):
 
 # Creates gif
 def log_summary(obs, action, embed, image_pred, model):
-    truth = obs[:6] + 0.5
+    truth = obs[:6] #+ 0.5
     recon = image_pred.mean[:6]
     init, _ = model.dynamics.observe(embed[:6, :5], action[:6, :5])
     init = [itm[:, -1] for itm in init]
     prior = model.dynamics.imagine(action[:6, 5:], init)
     openl = model.decoder(model.dynamics.get_feature(prior)).mean
 
-    mod = torch.cat([recon[:, :5] + 0.5, openl + 0.5], 1)
+    # mod = torch.cat([recon[:, :5] + 0.5, openl + 0.5], 1)
+    mod = torch.cat([recon[:, :5], openl], 1)
     error = (mod - truth + 1.0) / 2.0
     return torch.cat([truth, mod, error], 3)
 

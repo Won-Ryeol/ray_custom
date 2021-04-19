@@ -17,6 +17,11 @@ def get_filter_config(shape):
         [32, [4, 4], 2],
         [256, [11, 11], 1],
     ]
+    filters_64x64 = [
+        [32, [4, 4], 4],
+        [64, [4, 4], 2],
+        [256, [8, 8], 1],  
+    ]
     filters_42x42 = [
         [16, [4, 4], 2],
         [32, [4, 4], 2],
@@ -24,6 +29,8 @@ def get_filter_config(shape):
     ]
     if len(shape) == 3 and shape[:2] == [84, 84]:
         return filters_84x84
+    elif len(shape) == 3 and shape[:2] == [64, 64]:
+        return filters_64x64
     elif len(shape) == 3 and shape[:2] == [42, 42]:
         return filters_42x42
     else:

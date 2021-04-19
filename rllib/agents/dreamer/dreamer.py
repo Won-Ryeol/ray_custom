@@ -209,6 +209,8 @@ class DreamerIteration:
         return res
 
     def postprocess_gif(self, gif: np.ndarray):
+        max = np.max(gif)
+        min = np.min(gif)
         gif = np.clip(255 * gif, 0, 255).astype(np.uint8)
         B, T, C, H, W = gif.shape
         frames = gif.transpose((1, 2, 3, 0, 4)).reshape((1, T, C, H, B * W))

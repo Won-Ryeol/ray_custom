@@ -60,7 +60,7 @@ class ConvEncoder(nn.Module):
         x = self.model(x)
 
         new_shape = orig_shape[:-3] + [32 * self.depth]
-        x = x.view(*new_shape)
+        x = x.reshape(*new_shape)
         return x
 
 
@@ -481,6 +481,7 @@ class DreamerModel(TorchModelV2, nn.Module):
         """Returns the action. Runs through the encoder, recurrent model,
         and policy to obtain action.
         """
+        # TODO (wrkwak): 
         if state is None:
             self.initial_state()
         else:
@@ -488,7 +489,8 @@ class DreamerModel(TorchModelV2, nn.Module):
         post = self.state[:4]
         action = self.state[4]
 
-        embed = self.encoder(obs)
+        # embed = self.encoder(obs)
+        embed = self.encoder(obs.permute(0,3,1,2))
         post, _ = self.dynamics.obs_step(post, action, embed)
         feat = self.dynamics.get_feature(post)
 
