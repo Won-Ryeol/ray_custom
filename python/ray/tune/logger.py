@@ -238,12 +238,18 @@ class TBXLogger(Logger):
                   or (isinstance(value, np.ndarray) and value.size > 0)):
                 valid_result[full_attr] = value
 
-                # Must be video
-                if isinstance(value, np.ndarray) and value.ndim == 5:
-                    self._file_writer.add_video(
-                        full_attr, value, global_step=step, fps=20)
+                #! Must be image
+                if isinstance(value, np.ndarray) and value.ndim == 3:
+                    self._file_writer.add_image(
+                        full_attr, value, global_step=step)
                     continue
 
+                # Must be video
+                if isinstance(value, np.ndarray) and value.ndim == 5:
+                    for i in range(len(value)):
+                        self._file_writer.add_video(
+                            full_attr + f"_{i}", value[i:i+1], global_step=step, fps=20)
+                    continue
                 try:
                     self._file_writer.add_histogram(
                         full_attr, value, global_step=step)
@@ -667,8 +673,9 @@ class TBXLoggerCallback(LoggerCallback):
 
                 # Must be video
                 if isinstance(value, np.ndarray) and value.ndim == 5:
-                    self._trial_writer[trial].add_video(
-                        full_attr, value, global_step=step, fps=20)
+                    for i in range(len(value)):
+                        self._trial_writer[trial].add_video(
+                            full_attr + f"_{i}", value[i:i+1], global_step=step, fps=20)
                     continue
 
                 try:
