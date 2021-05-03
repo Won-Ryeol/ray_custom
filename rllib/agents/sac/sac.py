@@ -131,6 +131,8 @@ DEFAULT_CONFIG = with_common_config({
     # Use a Beta-distribution instead of a SquashedGaussian for bounded,
     # continuous action spaces (not recommended, for debugging only).
     "_use_beta_distribution": False,
+
+    "horizon" : 200,
 })
 # __sphinx_doc_end__
 # yapf: enable

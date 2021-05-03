@@ -9,6 +9,8 @@ from ray.rllib.utils.framework import get_activation_fn, try_import_torch
 from ray.rllib.utils.spaces.simplex import Simplex
 from ray.rllib.utils.typing import ModelConfigDict, TensorType
 
+from gradcam.grad_cam import GradCAM
+
 torch, nn = try_import_torch()
 
 
@@ -40,9 +42,10 @@ class SACTorchModel(TorchModelV2, nn.Module):
                  critic_hiddens: Tuple[int] = (256, 256),
                  twin_q: bool = False,
                  initial_alpha: float = 1.0,
-                 target_entropy: Optional[float] = None):
-        """Initializes a SACTorchModel instance.
-7
+                 target_entropy: Optional[float] = None,
+                 global_step: int = 0):
+        """
+        Initializes a SACTorchModel instance.
         Args:
             actor_hidden_activation (str): Activation for the actor network.
             actor_hiddens (list): Hidden layers sizes for the actor network.
@@ -155,6 +158,12 @@ class SACTorchModel(TorchModelV2, nn.Module):
 
         self.target_entropy = torch.tensor(
             data=[target_entropy], dtype=torch.float32, requires_grad=False)
+
+        self.global_step = 0
+        self.gcam = GradCAM(self._convs)
+
+    def step(self):
+        self.global_step += 1
 
     def get_q_values(self,
                      model_out: TensorType,
