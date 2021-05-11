@@ -166,8 +166,9 @@ def actor_critic_loss(
     
     deterministic = policy.config["_deterministic_loss"]
     
+    obs_raw = train_batch[SampleBatch.CUR_OBS]
     model_out_t, _ = model({
-        "obs": train_batch[SampleBatch.CUR_OBS],
+        "obs": obs_raw,
         "is_training": True,
     }, [], None)
 
@@ -284,6 +285,9 @@ def actor_critic_loss(
     # Note: In the papers, alpha is used directly, here we take the log.
     # Discrete case: Multiply the action probs as weights with the original
     # loss terms (no expectations needed).
+
+    # mlp_lastlayer_weight = model.action_model.action_out._model._modules['0'].weight.data
+
     if model.discrete:
         weighted_log_alpha_loss = policy_t.detach() * (
             -model.log_alpha * (log_pis_t + model.target_entropy).detach())
@@ -297,7 +301,7 @@ def actor_critic_loss(
                     # (compare with q_t_det_policy for continuous case).
                     policy_t,
                     alpha.detach() * log_pis_t - q_t.detach()),
-                dim=-1))
+                dim=-1)) + torch.norm(action_dist_t.dist.loc, p=2)
     else:
         alpha_loss = -torch.mean(model.log_alpha *
                                  (log_pis_t + model.target_entropy).detach())
@@ -305,75 +309,71 @@ def actor_critic_loss(
         # on the policy vars (policy sample pushed through Q-net).
         # However, we must make sure `actor_loss` is not used to update
         # the Q-net(s)' variables.
-        actor_loss = torch.mean(alpha.detach() * log_pis_t - q_t_det_policy)
-
-    # GradCAM
-    obs = train_batch["obs"]
-    action = train_batch["actions"][0,:3]
-    # update GradCAM
+        actor_loss = torch.mean(alpha.detach() * log_pis_t - q_t_det_policy) + torch.norm(action_dist_t.dist.loc, p=2)
+    
     model.step()
-    state = (obs * 255.0).float().permute(0,3,1,2)
-    _ = model.gcam.forward(torch.unsqueeze(state[0], 0))
+    if model.global_step % 1 == 0:
+        result_images = None
+        for axis in range(3):
+            # GradCAM
+            obs = obs_raw
+            # update GradCAM
+            
+            state = (obs * 255.0).float().permute(0,3,1,2)
+            action = model.gcam.forward(torch.unsqueeze(state[0], 0))
 
-    x_ran = (-0.0120, 0.0120)
-    y_ran = (-0.0180, 0.0178)
-    z_ran = (-0.0062, 0.0071)
-    bound = (x_ran, y_ran, z_ran)
+            x_ran = (-0.0120, 0.0120)
+            y_ran = (-0.0180, 0.0178)
+            z_ran = (-0.0062, 0.0071)
+            bound = (x_ran, y_ran, z_ran)
 
-    idx = tuple([2 if val > bound[idx][1] else 1 if val > bound[idx][0] else 0 for idx, val in enumerate(action)])
-    ids = torch.LongTensor([[9*idx[0]+3*idx[1]+idx[2]]]).cuda()
-    
-    model.gcam.backward(ids=ids)
+            # sign = ["+" if val > bound[idx][1] else "0" if val > bound[idx][0] else "-" for idx, val in enumerate(action)]
 
-    # save overlay of image
-    # (1) Get state image
-    state = state[0].permute(1,2,0).detach().cpu().numpy().astype(np.uint8)
-    state = cv2.resize(state, (150, 150), interpolation=cv2.INTER_LINEAR)
-    
-    # Get Grad-CAM image (3X3)
-    result_images = None
-    target_layer = "0._model.1"
-    
-    # (2) Get regions for each layer of model
-    regions = model.gcam.generate(target_layer)
-    regions = regions.detach().cpu().numpy()
-    regions = np.squeeze(regions) * 255
-    regions = np.transpose(regions)
-    
-    # Resizing the heatmap of region
-    regions = cv2.applyColorMap(regions.astype(np.uint8), cv2.COLORMAP_JET)
-    regions = cv2.resize(regions, (150, 150), interpolation=cv2.INTER_LINEAR)
+            # (1) Get state image
+            state = state[0].permute(1,2,0).detach().cpu().numpy().astype(np.uint8)
+            state = cv2.resize(state, (150, 150), interpolation=cv2.INTER_LINEAR)
+            
+            # Get Grad-CAM image (3X3)
+            
+            # target_layers = ["_convs.1", "_convs.0"]
+            # target_layers = ["_convs.1"]
+            # for target_layer in target_layers:   
+            target_layer = "_convs.1"
+        
+            # (2) Get regions for each layer of model
+            model.gcam.backward(axis)
+            regions = model.gcam.generate(target_layer)
+            regions = regions.detach().cpu().numpy()
+            regions = np.squeeze(regions) * 255
+            regions = np.transpose(regions)
+            
+            # Resizing the heatmap of region
+            regions = cv2.applyColorMap(regions.astype(np.uint8), cv2.COLORMAP_JET)
+            regions = cv2.resize(regions, (150, 150), interpolation=cv2.INTER_LINEAR)
 
-    # (3) Overlay the state & region.
-    overlay = cv2.addWeighted(state, 1.0, regions, 0.5, 0)
-    
-    # Concate (1)~(3)
-    result_images = np.hstack([state, regions, overlay])
-    
-    # Show action on result image
-    cv2.putText(
-        img=result_images,
-        text=f"dx:{idx[0]-1}, dy:{idx[1]-1}, dz:{idx[2]-1}",
-        org=(50, 50),
-        fontFace=cv2.FONT_HERSHEY_PLAIN,
-        fontScale=1,
-        color=(0, 0, 255),
-        thickness=2,
-    )
-    cv2.imwrite(f'/home/wrkwak/grad_cam_test/test_step{model.global_step}.png', cv2.cvtColor(result_images, cv2.COLOR_RGB2BGR))
-
-    # if True:
-    #     print("Current model step is {0}".format(model.global_step))
-    #     print("Save GradCAM Image")
-    #     # TODO (wrkwak): GradCAM
-
-    #     state = states[1].detach().cpu().numpy().astype(np.uint8)
-    #     state = np.transpose(state)
-    #     state = cv2.cvtColor(state, cv2.COLOR_GRAY2BGR)
-    #     state = cv2.resize(state, (150, 150), interpolation=cv2.INTER_LINEAR)
-
-
-
+            # (3) Overlay the state & region.
+            overlay = cv2.addWeighted(state, 1.0, regions, 0.5, 0)
+            
+            # Concate (1)~(3)
+            result = np.hstack([state, regions, overlay])
+            result_images = (
+                # np.vstack([np.ones((50,450,3))*255, result])
+                result
+                if result_images is None
+                else np.vstack([result_images, result])
+            )
+        result_images = cv2.copyMakeBorder(result_images,30,0,0,0,cv2.BORDER_CONSTANT,value=[255,255,255])
+        # Show action on result image
+        cv2.putText(
+            img=result_images,
+            text="action : {:0.3f},{:0.3f},{:0.3f}".format(action[0],action[1],action[2]),
+            org=(20, 20),
+            fontFace=cv2.FONT_HERSHEY_PLAIN,
+            fontScale=1,
+            color=(0, 0, 255),
+            thickness=2,
+        )
+        cv2.imwrite(f'/home/wrkwak/grad_cam_test/sac/5_test/test_step{model.global_step}.png', cv2.cvtColor(result_images, cv2.COLOR_RGB2BGR))
 
     # Save for stats function.
     policy.q_t = q_t
@@ -386,10 +386,6 @@ def actor_critic_loss(
     policy.log_alpha_value = model.log_alpha
     policy.alpha_value = alpha
     policy.target_entropy = model.target_entropy
-
-
-
-
 
 
     # Return all loss terms corresponding to our optimizers.

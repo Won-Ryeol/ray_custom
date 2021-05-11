@@ -14,6 +14,7 @@ if torch:
 
 ActFunc = Any
 
+from gradcam.grad_cam import GradCAM
 
 # Encoder, part of PlaNET
 class ConvEncoder(nn.Module):
@@ -475,7 +476,13 @@ class DreamerModel(TorchModelV2, nn.Module):
 
         self.device = (torch.device("cuda")
                        if torch.cuda.is_available() else torch.device("cpu"))
+        
+        self.global_step = 0
+        self.gcam = GradCAM(self.encoder)
 
+    def step(self):
+        self.global_step += 1
+        
     def policy(self, obs: TensorType, state: List[TensorType], explore=True
                ) -> Tuple[TensorType, List[float], List[TensorType]]:
         """Returns the action. Runs through the encoder, recurrent model,
@@ -500,8 +507,11 @@ class DreamerModel(TorchModelV2, nn.Module):
         else:
             action = action_dist.mean
         logp = action_dist.log_prob(action)
-
         self.state = post + [action]
+
+        self.global_step += 1
+        print(f"global_step = {self.global_step}")
+
         return action, logp, self.state
 
     def imagine_ahead(self, state: List[TensorType],

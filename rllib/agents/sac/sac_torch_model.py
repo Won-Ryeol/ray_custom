@@ -160,7 +160,8 @@ class SACTorchModel(TorchModelV2, nn.Module):
             data=[target_entropy], dtype=torch.float32, requires_grad=False)
 
         self.global_step = 0
-        self.gcam = GradCAM(self._convs)
+    
+        self.gcam = GradCAM(self)
 
     def step(self):
         self.global_step += 1

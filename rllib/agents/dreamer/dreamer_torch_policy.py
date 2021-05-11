@@ -13,6 +13,8 @@ if torch:
 
 logger = logging.getLogger(__name__)
 
+import cv2
+import numpy as np
 
 # This is the computation graph for workers (inner adaptation steps)
 def compute_dreamer_loss(obs,
@@ -114,6 +116,62 @@ def compute_dreamer_loss(obs,
 
     if log_gif is not None:
         return_dict["log_gif"] = log_gif
+
+
+    # GradCAM
+    action = action[0,0,:3]
+    # update GradCAM
+    state = (obs[0] * 255.0).float().permute(0,3,1,2)
+    _ = model.gcam.forward(torch.unsqueeze(state[0], 0))
+    
+    x_ran = (-0.0120, 0.0120)
+    y_ran = (-0.0180, 0.0178)
+    z_ran = (-0.0062, 0.0071)
+    bound = (x_ran, y_ran, z_ran)
+
+    idx = tuple([2 if val > bound[idx][1] else 1 if val > bound[idx][0] else 0 for idx, val in enumerate(action)])
+    ids = torch.LongTensor([[9*idx[0]+3*idx[1]+idx[2]]]).cuda()
+    
+    model.gcam.backward(ids=ids)
+
+    # save overlay of image
+    # (1) Get state image
+    state = state[0].permute(1,2,0).detach().cpu().numpy().astype(np.uint8)
+    state = cv2.resize(state, (150, 150), interpolation=cv2.INTER_LINEAR)
+    
+    # Get Grad-CAM image (3X3)
+    result_images = None
+    target_layer = "model.3"
+    
+    # (2) Get regions for each layer of model
+    regions = model.gcam.generate(target_layer)
+    regions = regions.detach().cpu().numpy()
+    regions = np.squeeze(regions) * 255
+    regions = np.transpose(regions)
+    
+    # Resizing the heatmap of region
+    regions = cv2.applyColorMap(regions.astype(np.uint8), cv2.COLORMAP_JET)
+    regions = cv2.resize(regions, (150, 150), interpolation=cv2.INTER_LINEAR)
+
+    # (3) Overlay the state & region.
+    overlay = cv2.addWeighted(state, 1.0, regions, 0.5, 0)
+    
+    # Concate (1)~(3)
+    result_images = np.hstack([state, regions, overlay])
+    
+    # Show action on result image
+    cv2.putText(
+        img=result_images,
+        text=f"dx:{idx[0]-1}, dy:{idx[1]-1}, dz:{idx[2]-1}",
+        org=(50, 50),
+        fontFace=cv2.FONT_HERSHEY_PLAIN,
+        fontScale=1,
+        color=(0, 0, 255),
+        thickness=2,
+    )
+    cv2.imwrite(f'/home/wrkwak/grad_cam_test/dreamer/1/test_step{model.global_step}.png', cv2.cvtColor(result_images, cv2.COLOR_RGB2BGR))
+    model.step()
+
     return return_dict
 
 
