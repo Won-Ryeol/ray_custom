@@ -477,8 +477,8 @@ class DreamerModel(TorchModelV2, nn.Module):
         self.device = (torch.device("cuda")
                        if torch.cuda.is_available() else torch.device("cpu"))
         
+        self.gcam = GradCAM(self, [self.encoder])
         self.global_step = 0
-        self.gcam = GradCAM(self.encoder)
 
     def step(self):
         self.global_step += 1
@@ -509,7 +509,7 @@ class DreamerModel(TorchModelV2, nn.Module):
         logp = action_dist.log_prob(action)
         self.state = post + [action]
 
-        self.global_step += 1
+        self.step()
         print(f"global_step = {self.global_step}")
 
         return action, logp, self.state

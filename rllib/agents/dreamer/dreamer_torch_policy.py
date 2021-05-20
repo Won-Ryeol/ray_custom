@@ -117,60 +117,64 @@ def compute_dreamer_loss(obs,
     if log_gif is not None:
         return_dict["log_gif"] = log_gif
 
-
-    # GradCAM
-    action = action[0,0,:3]
-    # update GradCAM
-    state = (obs[0] * 255.0).float().permute(0,3,1,2)
-    _ = model.gcam.forward(torch.unsqueeze(state[0], 0))
-    
-    x_ran = (-0.0120, 0.0120)
-    y_ran = (-0.0180, 0.0178)
-    z_ran = (-0.0062, 0.0071)
-    bound = (x_ran, y_ran, z_ran)
-
-    idx = tuple([2 if val > bound[idx][1] else 1 if val > bound[idx][0] else 0 for idx, val in enumerate(action)])
-    ids = torch.LongTensor([[9*idx[0]+3*idx[1]+idx[2]]]).cuda()
-    
-    model.gcam.backward(ids=ids)
-
-    # save overlay of image
-    # (1) Get state image
-    state = state[0].permute(1,2,0).detach().cpu().numpy().astype(np.uint8)
-    state = cv2.resize(state, (150, 150), interpolation=cv2.INTER_LINEAR)
-    
-    # Get Grad-CAM image (3X3)
-    result_images = None
-    target_layer = "model.3"
-    
-    # (2) Get regions for each layer of model
-    regions = model.gcam.generate(target_layer)
-    regions = regions.detach().cpu().numpy()
-    regions = np.squeeze(regions) * 255
-    regions = np.transpose(regions)
-    
-    # Resizing the heatmap of region
-    regions = cv2.applyColorMap(regions.astype(np.uint8), cv2.COLORMAP_JET)
-    regions = cv2.resize(regions, (150, 150), interpolation=cv2.INTER_LINEAR)
-
-    # (3) Overlay the state & region.
-    overlay = cv2.addWeighted(state, 1.0, regions, 0.5, 0)
-    
-    # Concate (1)~(3)
-    result_images = np.hstack([state, regions, overlay])
-    
-    # Show action on result image
-    cv2.putText(
-        img=result_images,
-        text=f"dx:{idx[0]-1}, dy:{idx[1]-1}, dz:{idx[2]-1}",
-        org=(50, 50),
-        fontFace=cv2.FONT_HERSHEY_PLAIN,
-        fontScale=1,
-        color=(0, 0, 255),
-        thickness=2,
-    )
-    cv2.imwrite(f'/home/wrkwak/grad_cam_test/dreamer/1/test_step{model.global_step}.png', cv2.cvtColor(result_images, cv2.COLOR_RGB2BGR))
     model.step()
+    # GradCAM
+    if len(obs.size()) == 5:
+        if model.global_step % 10 == 0:
+            result_images = None
+            for axis in range(3):
+                # update GradCAM
+                sample_state = torch.unsqueeze(obs[0][0].permute(2,0,1),0)
+                sample_post = [torch.unsqueeze(p[0][0],0) for p in post]
+                sample_action = torch.unsqueeze(action[0][0],0)
+                gcam_action = model.gcam.forward(sample_state, sample_post, sample_action)
+
+                # (1) Get state image
+                state = sample_state[0].permute(1,2,0).detach().cpu().numpy().astype(np.uint8)
+                state = cv2.resize(state, (150, 150), interpolation=cv2.INTER_LINEAR)
+                
+                # Get Grad-CAM image (3X3)
+                target_layer = "encoder.model.3"
+            
+                # (2) Get regions for each layer of model
+                model.gcam.backward(axis)
+                regions = model.gcam.generate(target_layer)
+                regions = regions.detach().cpu().numpy()
+                regions = np.squeeze(regions) * 255
+                regions = np.transpose(regions)
+                
+                # Resizing the heatmap of region
+                regions = cv2.applyColorMap(regions.astype(np.uint8), cv2.COLORMAP_JET)
+                regions = cv2.resize(regions, (150, 150), interpolation=cv2.INTER_LINEAR)
+                regions = cv2.cvtColor(regions, cv2.COLOR_RGB2BGR)
+
+                # (3) Overlay the state & region.
+                overlay = cv2.addWeighted(state, 1.0, regions, 0.5, 0)
+                
+                # Concate (1)~(3)
+                result = np.hstack([state, regions, overlay])
+                result_images = (
+                    result
+                    if result_images is None
+                    else np.vstack([result_images, result])
+                )
+            result_images = cv2.copyMakeBorder(result_images,30,0,0,0,cv2.BORDER_CONSTANT,value=[255,255,255])
+            # Show action on result image
+            cv2.putText(
+                img=result_images,
+                text="action : {:0.3f},{:0.3f},{:0.3f}".format(gcam_action[0],gcam_action[1],gcam_action[2]),
+                org=(20, 20),
+                fontFace=cv2.FONT_HERSHEY_PLAIN,
+                fontScale=1,
+                color=(0, 0, 255),
+                thickness=2,
+            )
+            cv2.imwrite(f'/home/wrkwak/grad_cam_test/dreamer/2/test_step{model.global_step}.png', cv2.cvtColor(result_images, cv2.COLOR_RGB2BGR))
+
+    elif len(obs.size()) == 3:
+        pass
+    else:
+        raise ValueError
 
     return return_dict
 

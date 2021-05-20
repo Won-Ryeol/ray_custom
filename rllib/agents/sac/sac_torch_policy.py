@@ -311,70 +311,78 @@ def actor_critic_loss(
         # the Q-net(s)' variables.
         actor_loss = torch.mean(alpha.detach() * log_pis_t - q_t_det_policy) + torch.norm(action_dist_t.dist.loc, p=2)
     
-    model.step()
-    if model.global_step % 1 == 0:
-        result_images = None
-        for axis in range(3):
-            # GradCAM
-            obs = obs_raw
-            # update GradCAM
-            
-            state = (obs * 255.0).float().permute(0,3,1,2)
-            action = model.gcam.forward(torch.unsqueeze(state[0], 0))
 
-            x_ran = (-0.0120, 0.0120)
-            y_ran = (-0.0180, 0.0178)
-            z_ran = (-0.0062, 0.0071)
-            bound = (x_ran, y_ran, z_ran)
+    # GradCAM
+    if len(obs_raw.size()) == 4:
+        model.step()
+        if model.global_step % 10 == 0:
+            result_images = None
+            for axis in range(3):
+                obs = obs_raw
+                # update GradCAM
+                
+                state = (obs * 255.0).float().permute(0,3,1,2)
+                action = model.gcam.forward(torch.unsqueeze(state[0], 0))
 
-            # sign = ["+" if val > bound[idx][1] else "0" if val > bound[idx][0] else "-" for idx, val in enumerate(action)]
+                # x_ran = (-0.0120, 0.0120)
+                # y_ran = (-0.0180, 0.0178)
+                # z_ran = (-0.0062, 0.0071)
+                # bound = (x_ran, y_ran, z_ran)
 
-            # (1) Get state image
-            state = state[0].permute(1,2,0).detach().cpu().numpy().astype(np.uint8)
-            state = cv2.resize(state, (150, 150), interpolation=cv2.INTER_LINEAR)
-            
-            # Get Grad-CAM image (3X3)
-            
-            # target_layers = ["_convs.1", "_convs.0"]
-            # target_layers = ["_convs.1"]
-            # for target_layer in target_layers:   
-            target_layer = "_convs.1"
-        
-            # (2) Get regions for each layer of model
-            model.gcam.backward(axis)
-            regions = model.gcam.generate(target_layer)
-            regions = regions.detach().cpu().numpy()
-            regions = np.squeeze(regions) * 255
-            regions = np.transpose(regions)
-            
-            # Resizing the heatmap of region
-            regions = cv2.applyColorMap(regions.astype(np.uint8), cv2.COLORMAP_JET)
-            regions = cv2.resize(regions, (150, 150), interpolation=cv2.INTER_LINEAR)
+                # sign = ["+" if val > bound[idx][1] else "0" if val > bound[idx][0] else "-" for idx, val in enumerate(action)]
 
-            # (3) Overlay the state & region.
-            overlay = cv2.addWeighted(state, 1.0, regions, 0.5, 0)
+                # (1) Get state image
+                state = state[0].permute(1,2,0).detach().cpu().numpy().astype(np.uint8)
+                state = cv2.resize(state, (150, 150), interpolation=cv2.INTER_LINEAR)
+                
+                # Get Grad-CAM image (3X3)
+                
+                # target_layers = ["_convs.1", "_convs.0"]
+                # target_layers = ["_convs.1"]
+                # for target_layer in target_layers:   
+                target_layer = "_convs.1"
             
-            # Concate (1)~(3)
-            result = np.hstack([state, regions, overlay])
-            result_images = (
-                # np.vstack([np.ones((50,450,3))*255, result])
-                result
-                if result_images is None
-                else np.vstack([result_images, result])
+                # (2) Get regions for each layer of model
+                model.gcam.backward(axis)
+                regions = model.gcam.generate(target_layer)
+                regions = regions.detach().cpu().numpy()
+                regions = np.squeeze(regions) * 255
+                regions = np.transpose(regions)
+                
+                # Resizing the heatmap of region
+                regions = cv2.applyColorMap(regions.astype(np.uint8), cv2.COLORMAP_JET)
+                regions = cv2.resize(regions, (150, 150), interpolation=cv2.INTER_LINEAR)
+                regions = cv2.cvtColor(regions, cv2.COLOR_RGB2BGR)
+
+                # (3) Overlay the state & region.
+                overlay = cv2.addWeighted(state, 1.0, regions, 0.5, 0)
+                
+                # Concate (1)~(3)
+                result = np.hstack([state, regions, overlay])
+                result_images = (
+                    result
+                    if result_images is None
+                    else np.vstack([result_images, result])
+                )
+            result_images = cv2.copyMakeBorder(result_images,30,0,0,0,cv2.BORDER_CONSTANT,value=[255,255,255])
+            # Show action on result image
+            cv2.putText(
+                img=result_images,
+                text="action : {:0.3f},{:0.3f},{:0.3f}".format(action[0],action[1],action[2]),
+                org=(20, 20),
+                fontFace=cv2.FONT_HERSHEY_PLAIN,
+                fontScale=1,
+                color=(0, 0, 255),
+                thickness=2,
             )
-        result_images = cv2.copyMakeBorder(result_images,30,0,0,0,cv2.BORDER_CONSTANT,value=[255,255,255])
-        # Show action on result image
-        cv2.putText(
-            img=result_images,
-            text="action : {:0.3f},{:0.3f},{:0.3f}".format(action[0],action[1],action[2]),
-            org=(20, 20),
-            fontFace=cv2.FONT_HERSHEY_PLAIN,
-            fontScale=1,
-            color=(0, 0, 255),
-            thickness=2,
-        )
-        cv2.imwrite(f'/home/wrkwak/grad_cam_test/sac/5_test/test_step{model.global_step}.png', cv2.cvtColor(result_images, cv2.COLOR_RGB2BGR))
+            cv2.imwrite(f'/home/wrkwak/grad_cam_test/sac/5_test3/test_step{model.global_step}.png', cv2.cvtColor(result_images, cv2.COLOR_RGB2BGR))
 
+    elif len(obs_raw.size()) == 2:
+        pass
+    else:
+        raise ValueError
+
+    
     # Save for stats function.
     policy.q_t = q_t
     policy.policy_t = policy_t
