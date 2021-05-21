@@ -163,9 +163,14 @@ def actor_critic_loss(
     """
     # Should be True only for debugging purposes (e.g. test cases)!
     
-    
+    action_size = train_batch['actions'].size()[-1]
+
+    for idx, ik_error in enumerate(train_batch['infos']):
+        if ik_error:
+            for dim in range(action_size):
+                train_batch['actions'][idx][dim] = 0.0
+
     deterministic = policy.config["_deterministic_loss"]
-    
     obs_raw = train_batch[SampleBatch.CUR_OBS]
     model_out_t, _ = model({
         "obs": obs_raw,

@@ -120,7 +120,7 @@ def compute_dreamer_loss(obs,
     model.step()
     # GradCAM
     if len(obs.size()) == 5:
-        if model.global_step % 10 == 0:
+        if model.global_step % 1 == 0:
             result_images = None
             for axis in range(3):
                 # update GradCAM
@@ -130,7 +130,7 @@ def compute_dreamer_loss(obs,
                 gcam_action = model.gcam.forward(sample_state, sample_post, sample_action)
 
                 # (1) Get state image
-                state = sample_state[0].permute(1,2,0).detach().cpu().numpy().astype(np.uint8)
+                state = (sample_state[0]*255).permute(1,2,0).detach().cpu().numpy().astype(np.uint8)
                 state = cv2.resize(state, (150, 150), interpolation=cv2.INTER_LINEAR)
                 
                 # Get Grad-CAM image (3X3)
@@ -141,7 +141,7 @@ def compute_dreamer_loss(obs,
                 regions = model.gcam.generate(target_layer)
                 regions = regions.detach().cpu().numpy()
                 regions = np.squeeze(regions) * 255
-                regions = np.transpose(regions)
+                regions = np.transpose(regions[0])
                 
                 # Resizing the heatmap of region
                 regions = cv2.applyColorMap(regions.astype(np.uint8), cv2.COLORMAP_JET)
@@ -217,6 +217,14 @@ def dreamer_loss(policy, model, dist_class, train_batch):
     log_gif = False
     if "log_gif" in train_batch:
         log_gif = True
+
+    action_size = train_batch['actions'].size()[-1]
+
+    for i, ik_error_per_batch_size in enumerate(train_batch['infos']):
+        for j, ik_error in enumerate(ik_error_per_batch_size):
+            if ik_error:
+                for dim in range(action_size):
+                    train_batch['actions'][i,j,dim] = 0.0
 
     policy.stats_dict = compute_dreamer_loss(
         train_batch["obs"],
