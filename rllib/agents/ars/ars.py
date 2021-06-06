@@ -316,7 +316,6 @@ class ARSTrainer(Trainer):
             episode_len_mean=eval_lengths.mean(),
             timesteps_this_iter=noisy_lengths.sum(),
             info=info)
-
         return result
 
     @override(Trainer)

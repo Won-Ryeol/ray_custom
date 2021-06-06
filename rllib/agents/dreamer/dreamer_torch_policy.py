@@ -120,7 +120,7 @@ def compute_dreamer_loss(obs,
     model.step()
     # GradCAM
     if len(obs.size()) == 5:
-        if model.global_step % 1 == 0:
+        if model.global_step % 300 == 0:
             result_images = None
             for axis in range(3):
                 # update GradCAM
