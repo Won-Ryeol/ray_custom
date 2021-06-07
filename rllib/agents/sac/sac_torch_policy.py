@@ -27,8 +27,11 @@ from ray.rllib.utils.torch_ops import huber_loss
 from ray.rllib.utils.typing import LocalOptimizer, TensorType, \
     TrainerConfigDict
 
+from gatsbi_rl.baselines.slide_to_target_config import CFG
+
 import cv2
 import numpy as np
+from pathlib import Path
 
 torch, nn = try_import_torch()
 F = nn.functional
@@ -380,7 +383,9 @@ def actor_critic_loss(
                 color=(0, 0, 255),
                 thickness=2,
             )
-            cv2.imwrite(f'/home/wrkwak/grad_cam_test/sac/5_test3/test_step{model.global_step}.png', cv2.cvtColor(result_images, cv2.COLOR_RGB2BGR))
+
+            Path(f'/home/wrkwak/grad_cam_test/sac/{CFG.TASK}/{CFG.EXP_NAME}').mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(f'/home/wrkwak/grad_cam_test/sac/{CFG.TASK}/{CFG.EXP_NAME}/test_step{model.global_step}.png', cv2.cvtColor(result_images, cv2.COLOR_RGB2BGR))
 
     elif len(obs_raw.size()) == 2:
         pass
