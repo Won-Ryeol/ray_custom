@@ -14,7 +14,7 @@ if torch:
 
 ActFunc = Any
 
-from gradcam.grad_cam import GradCAM
+# from gradcam.grad_cam import GradCAM
 
 # Encoder, part of PlaNET
 class ConvEncoder(nn.Module):
@@ -478,7 +478,7 @@ class DreamerModel(TorchModelV2, nn.Module):
                        if torch.cuda.is_available() else torch.device("cpu"))
         
         self.global_step = 0
-        self.gcam = GradCAM(self.encoder)
+        # self.gcam = GradCAM(self.encoder)
 
     def step(self):
         self.global_step += 1
