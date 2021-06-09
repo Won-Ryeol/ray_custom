@@ -14,7 +14,9 @@ if torch:
 
 ActFunc = Any
 
-# from gradcam.grad_cam import GradCAM
+import sys
+sys.path.append("/home/wrkwak/gatsbi_rl")
+from gradcam.grad_cam import GradCAM
 
 # Encoder, part of PlaNET
 class ConvEncoder(nn.Module):
@@ -477,8 +479,11 @@ class DreamerModel(TorchModelV2, nn.Module):
         self.device = (torch.device("cuda")
                        if torch.cuda.is_available() else torch.device("cpu"))
         
+        # self.gcam = GradCAM(self, list(self.encoder.model)+[self.encoder])
+        self.gcam = GradCAM(self, ["encoder.model.0","encoder.model.1","encoder.model.2",\
+                                    "encoder.model.3","encoder.model.4","encoder.model.5",\
+                                        "encoder.model.6","encoder.model.7","encoder.model","encoder"])
         self.global_step = 0
-        # self.gcam = GradCAM(self.encoder)
 
     def step(self):
         self.global_step += 1
@@ -501,7 +506,7 @@ class DreamerModel(TorchModelV2, nn.Module):
         post, _ = self.dynamics.obs_step(post, action, embed)
         feat = self.dynamics.get_feature(post)
 
-        action_dist = self.actor(feat)
+        action_dist = self.actor.forward(feat)
         if explore:
             action = action_dist.sample()
         else:
@@ -509,7 +514,7 @@ class DreamerModel(TorchModelV2, nn.Module):
         logp = action_dist.log_prob(action)
         self.state = post + [action]
 
-        self.global_step += 1
+        self.step()
         print(f"global_step = {self.global_step}")
 
         return action, logp, self.state

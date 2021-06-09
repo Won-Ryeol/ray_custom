@@ -95,7 +95,7 @@ DEFAULT_CONFIG = with_common_config({
         "entropy_learning_rate": 3e-4,
     },
     # If not None, clip gradients during optimization at this value.
-    "grad_clip": None,
+    "grad_clip": 3.0,
     # How many steps of the model to sample before learning starts.
     "learning_starts": 1500,
     # Update the replay buffer with this many samples at once. Note that this

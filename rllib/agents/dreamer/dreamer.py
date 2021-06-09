@@ -72,7 +72,7 @@ DEFAULT_CONFIG = with_common_config({
 
     "env_config": {
         # Repeats action send by policy for frame_skip times in env
-        "frame_skip": 2,
+        "frame_skip": 1,
     }
 })
 # __sphinx_doc_end__
@@ -126,20 +126,24 @@ class EpisodicBuffer(object):
         new_obs = episode["new_obs"]
         action = episode["actions"]
         reward = episode["rewards"]
+        infos = episode['infos']
 
         act_shape = action.shape
         act_reset = np.array([0.0] * act_shape[-1])[None]
         rew_reset = np.array(0.0)[None]
         obs_end = np.array(new_obs[act_shape[0] - 1])[None]
+        infos_reset = np.array(False)[None]
 
         batch_obs = np.concatenate([obs, obs_end], axis=0)
         batch_action = np.concatenate([act_reset, action], axis=0)
         batch_rew = np.concatenate([rew_reset, reward], axis=0)
+        batch_infos = np.concatenate([infos_reset, infos], axis=0)
 
         new_batch = {
             "obs": batch_obs,
             "rewards": batch_rew,
-            "actions": batch_action
+            "actions": batch_action,
+            "infos" : batch_infos
         }
         return SampleBatch(new_batch)
 
@@ -183,7 +187,7 @@ class DreamerIteration:
 
         # Dreamer Training Loop
         for n in range(self.dreamer_train_iters):
-            print(n)
+            print(f"Dreamer Trainig Loop {n}")
             batch = self.episode_buffer.sample(self.batch_size)
             if n == self.dreamer_train_iters - 1:
                 batch["log_gif"] = True

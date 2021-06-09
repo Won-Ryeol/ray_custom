@@ -9,6 +9,8 @@ from ray.rllib.utils.framework import get_activation_fn, try_import_torch
 from ray.rllib.utils.spaces.simplex import Simplex
 from ray.rllib.utils.typing import ModelConfigDict, TensorType
 
+import sys
+sys.path.append("/home/wrkwak/gatsbi_rl")
 from gradcam.grad_cam import GradCAM
 
 torch, nn = try_import_torch()
@@ -162,6 +164,8 @@ class SACTorchModel(TorchModelV2, nn.Module):
         self.global_step = 0
     
         self.gcam = GradCAM(self)
+        # self.task_name = 
+
 
     def step(self):
         self.global_step += 1

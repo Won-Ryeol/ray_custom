@@ -27,13 +27,22 @@ from ray.rllib.utils.torch_ops import huber_loss
 from ray.rllib.utils.typing import LocalOptimizer, TensorType, \
     TrainerConfigDict
 
+from gatsbi_rl.baselines.slide_to_target_config import CFG
+from gatsbi_rl.gradcam.saliency_map import *
+from gatsbi_rl.rllib_agent.utils import FreezeParameters
+
 import cv2
 import numpy as np
+from pathlib import Path
+
+import captum
+
 
 torch, nn = try_import_torch()
 F = nn.functional
 
 logger = logging.getLogger(__name__)
+
 
 
 def build_sac_model_and_action_dist(
@@ -163,9 +172,14 @@ def actor_critic_loss(
     """
     # Should be True only for debugging purposes (e.g. test cases)!
     
-    
+    action_size = train_batch['actions'].size()[-1]
+
+    # for idx, ik_error in enumerate(train_batch['infos']):
+    #     if ik_error:
+    #         for dim in range(action_size):
+    #             train_batch['actions'][idx][dim] = 0.0
+
     deterministic = policy.config["_deterministic_loss"]
-    
     obs_raw = train_batch[SampleBatch.CUR_OBS]
     model_out_t, _ = model({
         "obs": obs_raw,
@@ -311,70 +325,124 @@ def actor_critic_loss(
         # the Q-net(s)' variables.
         actor_loss = torch.mean(alpha.detach() * log_pis_t - q_t_det_policy) + torch.norm(action_dist_t.dist.loc, p=2)
     
-    model.step()
-    if model.global_step % 1 == 0:
-        result_images = None
-        for axis in range(3):
-            # GradCAM
-            obs = obs_raw
-            # update GradCAM
-            
-            state = (obs * 255.0).float().permute(0,3,1,2)
-            action = model.gcam.forward(torch.unsqueeze(state[0], 0))
 
-            x_ran = (-0.0120, 0.0120)
-            y_ran = (-0.0180, 0.0178)
-            z_ran = (-0.0062, 0.0071)
-            bound = (x_ran, y_ran, z_ran)
+    XAI_DIR = f'/home/wrkwak/xai_results/sac/{CFG.TASK}/{CFG.EXP_NAME}'
+    # XAI
+    if len(obs_raw.size()) == 4:
+        model.step()
+        if model.global_step % 200 == 0:
 
-            # sign = ["+" if val > bound[idx][1] else "0" if val > bound[idx][0] else "-" for idx, val in enumerate(action)]
+            if CFG.GCAM:
+                # Grad-CAM
+                result_images = None
+                for axis in range(3):
+                    obs = obs_raw
+                    # update GradCAM
+                    state = (obs * 255.0).float().permute(0,3,1,2)
+                    action = model.gcam.forward(torch.unsqueeze(state[0], 0))
 
-            # (1) Get state image
-            state = state[0].permute(1,2,0).detach().cpu().numpy().astype(np.uint8)
-            state = cv2.resize(state, (150, 150), interpolation=cv2.INTER_LINEAR)
-            
-            # Get Grad-CAM image (3X3)
-            
-            # target_layers = ["_convs.1", "_convs.0"]
-            # target_layers = ["_convs.1"]
-            # for target_layer in target_layers:   
-            target_layer = "_convs.1"
-        
-            # (2) Get regions for each layer of model
-            model.gcam.backward(axis)
-            regions = model.gcam.generate(target_layer)
-            regions = regions.detach().cpu().numpy()
-            regions = np.squeeze(regions) * 255
-            regions = np.transpose(regions)
-            
-            # Resizing the heatmap of region
-            regions = cv2.applyColorMap(regions.astype(np.uint8), cv2.COLORMAP_JET)
-            regions = cv2.resize(regions, (150, 150), interpolation=cv2.INTER_LINEAR)
+                    # (1) Get state image
+                    state = state[0].permute(1,2,0).detach().cpu().numpy().astype(np.uint8)
+                    state = cv2.resize(state, (150, 150), interpolation=cv2.INTER_LINEAR)
+                    
+                    # Get Grad-CAM image (3X3)
+                    # for target_layer in target_layers:   
+                    target_layer = "_convs.1"
+                
+                    # (2) Get regions for each layer of model
+                    model.gcam.backward(axis)
+                    regions = model.gcam.generate(target_layer)
+                    regions = regions.detach().cpu().numpy()
+                    regions = np.squeeze(regions) * 255
+                    regions = np.transpose(regions)
+                    
+                    # Resizing the heatmap of region
+                    regions = cv2.applyColorMap(regions.astype(np.uint8), cv2.COLORMAP_JET)
+                    regions = cv2.resize(regions, (150, 150), interpolation=cv2.INTER_LINEAR)
+                    regions = cv2.cvtColor(regions, cv2.COLOR_RGB2BGR)
 
-            # (3) Overlay the state & region.
-            overlay = cv2.addWeighted(state, 1.0, regions, 0.5, 0)
-            
-            # Concate (1)~(3)
-            result = np.hstack([state, regions, overlay])
-            result_images = (
-                # np.vstack([np.ones((50,450,3))*255, result])
-                result
-                if result_images is None
-                else np.vstack([result_images, result])
-            )
-        result_images = cv2.copyMakeBorder(result_images,30,0,0,0,cv2.BORDER_CONSTANT,value=[255,255,255])
-        # Show action on result image
-        cv2.putText(
-            img=result_images,
-            text="action : {:0.3f},{:0.3f},{:0.3f}".format(action[0],action[1],action[2]),
-            org=(20, 20),
-            fontFace=cv2.FONT_HERSHEY_PLAIN,
-            fontScale=1,
-            color=(0, 0, 255),
-            thickness=2,
-        )
-        cv2.imwrite(f'/home/wrkwak/grad_cam_test/sac/5_test/test_step{model.global_step}.png', cv2.cvtColor(result_images, cv2.COLOR_RGB2BGR))
+                    # (3) Overlay the state & region.
+                    overlay = cv2.addWeighted(state, 1.0, regions, 0.5, 0)
+                    
+                    # Concate (1)~(3)
+                    result = np.hstack([state, regions, overlay])
+                    result_images = (
+                        result
+                        if result_images is None
+                        else np.vstack([result_images, result])
+                    )
+                result_images = cv2.copyMakeBorder(result_images,30,0,0,0,cv2.BORDER_CONSTANT,value=[255,255,255])
+                # Show action on result image
+                cv2.putText(
+                    img=result_images,
+                    text="action : {:0.3f},{:0.3f},{:0.3f}".format(action[0],action[1],action[2]),
+                    org=(20, 20),
+                    fontFace=cv2.FONT_HERSHEY_PLAIN,
+                    fontScale=1,
+                    color=(0, 0, 255),
+                    thickness=2,
+                )
+                xai_dir = XAI_DIR + '/gcam'
+                Path(xai_dir).mkdir(parents=True, exist_ok=True)
+                cv2.imwrite(xai_dir + '/{}_gcam.png'.format(model.global_step), cv2.cvtColor(result_images, cv2.COLOR_RGB2BGR))
+                
+            if CFG.SMAP:
+                # Saliency map.
+                xai_dir = XAI_DIR + '/smap'
+                Path(xai_dir).mkdir(parents=True, exist_ok=True)
+                # saliency_map_dir = make_saliency_dir(xai_dir)
+                
+                obs = obs_raw
+                # update GradCAM
+                state = (obs * 255.0).float().permute(0,3,1,2)
 
+                action = model.gcam.forward(torch.unsqueeze(state[0], 0))
+
+                with FreezeParameters(model.parameters()):
+                    saliency_map = save_saliency_maps(
+                    state=state,
+                    action=action, 
+                    model=model,
+                    device = obs.device,
+                    saliency_map_dir=xai_dir
+                    )
+                
+                # state = np.transpose(state[-1])
+                # state = cv2.cvtColor(state, cv2.COLOR_GRAY2BGR)
+                # state = cv2.resize(state, (150, 150), interpolation=cv2.INTER_LINEAR)
+
+                # # Get Grad-CAM image
+                # result_images = None
+                # saliency_map = np.asarray(saliency_map)
+                # saliency_map = cv2.resize(
+                #     saliency_map, (150, 150), interpolation=cv2.INTER_LINEAR
+                # )
+                # saliency_map = cv2.cvtColor(saliency_map, cv2.COLOR_RGBA2BGR)
+                # overlay = cv2.addWeighted(state, 1.0, saliency_map, 0.5, 0)
+                # result = np.hstack([state, saliency_map, overlay])
+                # result_images = (
+                #     result
+                #     if result_images is None
+                #     else np.vstack([result_images, result])
+                # )
+                # # Show action on result image
+                # cv2.putText(
+                #     img=result_images,
+                #     text=f"action: {action}",
+                #     org=(50, 50),
+                #     fontFace=cv2.FONT_HERSHEY_PLAIN,
+                #     fontScale=1,
+                #     color=(0, 0, 255),
+                #     thickness=2,
+                # )
+                # cv2.imwrite(xai_dir + f'/test_step{model.global_step}.png', result_images)
+
+    elif len(obs_raw.size()) == 2:
+        pass
+    else:
+        raise ValueError
+
+    
     # Save for stats function.
     policy.q_t = q_t
     policy.policy_t = policy_t
