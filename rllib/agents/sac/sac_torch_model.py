@@ -164,6 +164,8 @@ class SACTorchModel(TorchModelV2, nn.Module):
         self.global_step = 0
     
         self.gcam = GradCAM(self)
+        # self.task_name = 
+
 
     def step(self):
         self.global_step += 1
