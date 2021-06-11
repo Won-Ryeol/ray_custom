@@ -302,6 +302,7 @@ def actor_critic_loss(
 
     # mlp_lastlayer_weight = model.action_model.action_out._model._modules['0'].weight.data
 
+    action_dist_norm = torch.norm(action_dist_t.dist.loc, p=2)
     if model.discrete:
         weighted_log_alpha_loss = policy_t.detach() * (
             -model.log_alpha * (log_pis_t + model.target_entropy).detach())
@@ -315,7 +316,7 @@ def actor_critic_loss(
                     # (compare with q_t_det_policy for continuous case).
                     policy_t,
                     alpha.detach() * log_pis_t - q_t.detach()),
-                dim=-1)) + torch.norm(action_dist_t.dist.loc, p=2)
+                dim=-1)) + CFG.ACT_REG_WEIGHT * action_dist_norm
     else:
         alpha_loss = -torch.mean(model.log_alpha *
                                  (log_pis_t + model.target_entropy).detach())
@@ -323,20 +324,21 @@ def actor_critic_loss(
         # on the policy vars (policy sample pushed through Q-net).
         # However, we must make sure `actor_loss` is not used to update
         # the Q-net(s)' variables.
-        actor_loss = torch.mean(alpha.detach() * log_pis_t - q_t_det_policy) + torch.norm(action_dist_t.dist.loc, p=2)
+        
+        actor_loss = torch.mean(alpha.detach() * log_pis_t - q_t_det_policy) + CFG.ACT_REG_WEIGHT * action_dist_norm
     
 
     XAI_DIR = f'/home/wrkwak/xai_results/sac/{CFG.TASK}/{CFG.EXP_NAME}'
     # XAI
     if len(obs_raw.size()) == 4:
         model.step()
-        if model.global_step % 200 == 0:
-
+        if model.global_step % 10 == 0:
+            obs = obs_raw
             if CFG.GCAM:
                 # Grad-CAM
                 result_images = None
                 for axis in range(3):
-                    obs = obs_raw
+                    
                     # update GradCAM
                     state = (obs * 255.0).float().permute(0,3,1,2)
                     action = model.gcam.forward(torch.unsqueeze(state[0], 0))
@@ -389,53 +391,53 @@ def actor_critic_loss(
             if CFG.SMAP:
                 # Saliency map.
                 xai_dir = XAI_DIR + '/smap'
-                Path(xai_dir).mkdir(parents=True, exist_ok=True)
-                # saliency_map_dir = make_saliency_dir(xai_dir)
+                Path(xai_dir).mkdir(parents=True, exist_ok=True) # saliency_map_dir = make_saliency_dir(xai_dir)
                 
-                obs = obs_raw
                 # update GradCAM
                 state = (obs * 255.0).float().permute(0,3,1,2)
 
-                action = model.gcam.forward(torch.unsqueeze(state[0], 0))
-
                 with FreezeParameters(model.parameters()):
-                    saliency_map = save_saliency_maps(
-                    state=state,
-                    action=action, 
-                    model=model,
-                    device = obs.device,
-                    saliency_map_dir=xai_dir
-                    )
-                
-                # state = np.transpose(state[-1])
-                # state = cv2.cvtColor(state, cv2.COLOR_GRAY2BGR)
-                # state = cv2.resize(state, (150, 150), interpolation=cv2.INTER_LINEAR)
+                    saliency_map, scores= compute_saliency_maps(
+                        state = state[0].unsqueeze(0),
+                        model = model,
+                        device = policy.device
+                        )
+                        
+                state = state[0].permute(1,2,0).detach().cpu().numpy().astype(np.uint8)
+                state = cv2.resize(state, (150, 150), interpolation=cv2.INTER_LINEAR)
+                state = cv2.cvtColor(state, cv2.COLOR_RGB2BGR)
+                result_images = None
+                for smap in saliency_map:
+                    smap = smap.detach().cpu().numpy()
 
-                # # Get Grad-CAM image
-                # result_images = None
-                # saliency_map = np.asarray(saliency_map)
-                # saliency_map = cv2.resize(
-                #     saliency_map, (150, 150), interpolation=cv2.INTER_LINEAR
-                # )
-                # saliency_map = cv2.cvtColor(saliency_map, cv2.COLOR_RGBA2BGR)
-                # overlay = cv2.addWeighted(state, 1.0, saliency_map, 0.5, 0)
-                # result = np.hstack([state, saliency_map, overlay])
-                # result_images = (
-                #     result
-                #     if result_images is None
-                #     else np.vstack([result_images, result])
-                # )
-                # # Show action on result image
-                # cv2.putText(
-                #     img=result_images,
-                #     text=f"action: {action}",
-                #     org=(50, 50),
-                #     fontFace=cv2.FONT_HERSHEY_PLAIN,
-                #     fontScale=1,
-                #     color=(0, 0, 255),
-                #     thickness=2,
-                # )
-                # cv2.imwrite(xai_dir + f'/test_step{model.global_step}.png', result_images)
+                    min_val = smap.min()
+                    max_val = smap.max()
+                    smap = smap - min_val
+                    smap = smap / (max_val - min_val) * 255
+                    smap = cv2.applyColorMap(smap[0].astype(np.uint8), cv2.COLORMAP_HOT)
+                    smap = cv2.resize(smap, (150, 150), interpolation=cv2.INTER_LINEAR)
+                    
+
+                    overlay = cv2.addWeighted(state, 1.0, smap, 0.5, 0)
+                    result = np.hstack([state, smap, overlay])
+                    result_images = (
+                        result
+                        if result_images is None
+                        else np.vstack([result_images, result])
+                    )
+                # Show action on result image
+                result_images = cv2.copyMakeBorder(result_images,30,0,0,0,cv2.BORDER_CONSTANT,value=[255,255,255])
+                scores = scores.detach().cpu().numpy()
+                cv2.putText(
+                    img=result_images,
+                    text="action : {:0.3f},{:0.3f},{:0.3f}".format(scores[0],scores[1],scores[2]),
+                    org=(20, 20),
+                    fontFace=cv2.FONT_HERSHEY_PLAIN,
+                    fontScale=1,
+                    color=(255, 0, 0),
+                    thickness=2,
+                )
+                cv2.imwrite(xai_dir + f'/test_step{model.global_step}.png', result_images)
 
     elif len(obs_raw.size()) == 2:
         pass
@@ -454,7 +456,7 @@ def actor_critic_loss(
     policy.log_alpha_value = model.log_alpha
     policy.alpha_value = alpha
     policy.target_entropy = model.target_entropy
-
+    policy.action_dist_norm = action_dist_norm
 
     # Return all loss terms corresponding to our optimizers.
     return tuple([policy.actor_loss] + policy.critic_loss +
@@ -484,6 +486,7 @@ def stats(policy: Policy, train_batch: SampleBatch) -> Dict[str, TensorType]:
         "mean_q": torch.mean(policy.q_t),
         "max_q": torch.max(policy.q_t),
         "min_q": torch.min(policy.q_t),
+        "action_dist_norm" : policy.action_dist_norm,
     }
 
 
