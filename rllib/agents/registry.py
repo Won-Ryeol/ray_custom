@@ -95,9 +95,9 @@ def _import_ppo():
     return ppo.PPOTrainer
 
 
-def _import_qmix():
-    from ray.rllib.agents import qmix
-    return qmix.QMixTrainer
+# def _import_qmix():
+#     from ray.rllib.agents import qmix
+#     return qmix.QMixTrainer
 
 
 def _import_sac():
