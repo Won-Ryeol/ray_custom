@@ -406,36 +406,13 @@ def actor_critic_loss(
                     device = obs.device,
                     saliency_map_dir=xai_dir
                     )
-                
-                # state = np.transpose(state[-1])
-                # state = cv2.cvtColor(state, cv2.COLOR_GRAY2BGR)
-                # state = cv2.resize(state, (150, 150), interpolation=cv2.INTER_LINEAR)
 
-                # # Get Grad-CAM image
-                # result_images = None
-                # saliency_map = np.asarray(saliency_map)
-                # saliency_map = cv2.resize(
-                #     saliency_map, (150, 150), interpolation=cv2.INTER_LINEAR
-                # )
-                # saliency_map = cv2.cvtColor(saliency_map, cv2.COLOR_RGBA2BGR)
-                # overlay = cv2.addWeighted(state, 1.0, saliency_map, 0.5, 0)
-                # result = np.hstack([state, saliency_map, overlay])
-                # result_images = (
-                #     result
-                #     if result_images is None
-                #     else np.vstack([result_images, result])
-                # )
-                # # Show action on result image
-                # cv2.putText(
-                #     img=result_images,
-                #     text=f"action: {action}",
-                #     org=(50, 50),
-                #     fontFace=cv2.FONT_HERSHEY_PLAIN,
-                #     fontScale=1,
-                #     color=(0, 0, 255),
-                #     thickness=2,
-                # )
-                # cv2.imwrite(xai_dir + f'/test_step{model.global_step}.png', result_images)
+            # if CFG.LRP:
+            #     # lrp
+
+
+
+
 
     elif len(obs_raw.size()) == 2:
         pass
