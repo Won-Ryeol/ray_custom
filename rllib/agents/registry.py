@@ -140,7 +140,7 @@ ALGORITHMS = {
     "MBMPO": _import_mbmpo,
     "PG": _import_pg,
     "PPO": _import_ppo,
-    "QMIX": _import_qmix,
+    # "QMIX": _import_qmix,
     "SAC": _import_sac,
     "SimpleQ": _import_simple_q,
     "TD3": _import_td3,
