@@ -493,7 +493,7 @@ class Policy(metaclass=ABCMeta):
                 broadcast from the driver.
         """
         # Store the current global time step (sum over all policies' sample
-        # steps).
+        # steps). #? when is it called?
         self.global_timestep = global_vars["timestep"]
 
     @DeveloperAPI
