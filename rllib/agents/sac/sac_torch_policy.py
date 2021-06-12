@@ -30,6 +30,7 @@ from ray.rllib.utils.typing import LocalOptimizer, TensorType, \
 from gatsbi_rl.baselines.slide_to_target_config import CFG
 from gatsbi_rl.gradcam.saliency_map import *
 from gatsbi_rl.rllib_agent.utils import FreezeParameters
+from gatsbi_rl.gradcam import lrp
 
 import cv2
 import numpy as np
@@ -407,8 +408,8 @@ def actor_critic_loss(
                     saliency_map_dir=xai_dir
                     )
 
-            # if CFG.LRP:
-            #     # lrp
+            if CFG.LRP:
+
 
 
 
