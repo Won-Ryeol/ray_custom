@@ -27,15 +27,20 @@ from ray.rllib.utils.torch_ops import huber_loss
 from ray.rllib.utils.typing import LocalOptimizer, TensorType, \
     TrainerConfigDict
 
+
+# explainable ai.
 from gatsbi_rl.baselines.slide_to_target_config import CFG
 from gatsbi_rl.gradcam.saliency_map import *
 from gatsbi_rl.rllib_agent.utils import FreezeParameters
+from gatsbi_rl.gradcam.lrp import convert_vision
+from gatsbi_rl.gradcam.lrp.visualize import *
+from gatsbi_rl.gradcam.lrp.converter import SlimFlatten
 
 import cv2
 import numpy as np
 from pathlib import Path
 
-import captum
+import matplotlib.pyplot as plt
 
 
 torch, nn = try_import_torch()
@@ -332,7 +337,7 @@ def actor_critic_loss(
     # XAI
     if len(obs_raw.size()) == 4:
         model.step()
-        if model.global_step % 10 == 0:
+        if model.global_step % 500 == 0:
             obs = obs_raw
             if CFG.GCAM:
                 # Grad-CAM
@@ -403,7 +408,7 @@ def actor_critic_loss(
                         device = policy.device
                         )
                         
-                state = state[0].permute(1,2,0).detach().cpu().numpy().astype(np.uint8)
+                state = state[0].permute(1,2,0).detach().cpu().numpy() # .astype(np.uint8)
                 state = cv2.resize(state, (150, 150), interpolation=cv2.INTER_LINEAR)
                 state = cv2.cvtColor(state, cv2.COLOR_RGB2BGR)
                 result_images = None
@@ -412,12 +417,11 @@ def actor_critic_loss(
 
                     min_val = smap.min()
                     max_val = smap.max()
-                    smap = smap - min_val
-                    smap = smap / (max_val - min_val) * 255
-                    smap = cv2.applyColorMap(smap[0].astype(np.uint8), cv2.COLORMAP_HOT)
+                    # smap = smap - min_val
+                    # smap = smap / (max_val - min_val) * 255
+                    smap = heatmap(smap.transpose(1, 2, 0)) * 255.0
+                    # smap = cv2.applyColorMap(smap[0].astype(np.uint8), cv2.COLORMAP_HOT)
                     smap = cv2.resize(smap, (150, 150), interpolation=cv2.INTER_LINEAR)
-                    
-
                     overlay = cv2.addWeighted(state, 1.0, smap, 0.5, 0)
                     result = np.hstack([state, smap, overlay])
                     result_images = (
@@ -438,6 +442,74 @@ def actor_critic_loss(
                     thickness=2,
                 )
                 cv2.imwrite(xai_dir + f'/test_step{model.global_step}.png', result_images)
+
+            # TODO (Chmin): we should only parse the actor part of the model.
+            if CFG.LRP:
+                xai_dir = XAI_DIR + '/lrp'
+                Path(xai_dir).mkdir(parents=True, exist_ok=True) # saliency_map_dir = make_saliency_dir(xai_dir)
+
+                model.eval()
+
+                # TODO (chmin): check if tanh could be parsed.
+                act_infer_list = [model._convs, model._logits, SlimFlatten(), model.action_model]
+                lrp_model = convert_vision(act_infer_list).to(obs.device)
+                _ = lrp_model(obs.permute(0, 3, 1, 2)) # [B, 2 * A]
+                
+
+                input = obs.contiguous().detach().cpu().numpy()[0][None][0]
+
+                #plot for each explanation
+                result_images = None
+                action = np.zeros(3)
+                for axis in range(3):
+                    result = cv2.resize(input * 255, (150, 150), interpolation=cv2.INTER_LINEAR)
+                    for _, (rule, pattern) in enumerate(explanations):
+                        attr, action[axis] = compute_and_plot_explanation(lrp_model, obs=obs[0][None].permute(0, 3, 1, 2), rule=rule, axis = axis, patterns=pattern)
+                        attr = heatmap(attr) * 255
+                        attr = cv2.resize(attr[0], (150, 150), interpolation=cv2.INTER_LINEAR)
+                        if result_images is None:
+                            if result.shape[0] == 150:
+                                result = cv2.copyMakeBorder(result,30,0,0,0,cv2.BORDER_CONSTANT,value=[255,255,255])                
+                            attr = cv2.copyMakeBorder(attr,30,0,0,0,cv2.BORDER_CONSTANT,value=[255,255,255])                
+                            cv2.putText(
+                                img=attr,
+                                text=rule,
+                                org=(20, 20),
+                                fontFace=cv2.FONT_HERSHEY_PLAIN,
+                                fontScale=1,
+                                color=(255, 0, 0),
+                                thickness=1,
+                            )
+                        result = np.hstack([result, attr])
+                    result_images = (
+                        result
+                        if result_images is None
+                        else np.vstack([result_images, result])
+                    )
+                # Show action on result image
+                result_images = cv2.copyMakeBorder(result_images,30,0,0,0,cv2.BORDER_CONSTANT,value=[255,255,255])
+                
+                cv2.putText(
+                    img=result_images,
+                    text="action : {:0.3f},{:0.3f},{:0.3f}".format(action[0],action[1],action[2]),
+                    org=(20, 20),
+                    fontFace=cv2.FONT_HERSHEY_PLAIN,
+                    fontScale=1,
+                    color=(0, 0, 255),
+                    thickness=2,
+                )
+                cv2.imwrite(xai_dir + f'/test_step{model.global_step}.png', cv2.cvtColor(result_images, cv2.COLOR_RGB2BGR))
+
+
+                # for module in model.modules():
+                #     for sub_module in module.modules():
+                #         if isinstance(sub_module, nn.BatchNorm2d):
+                #             if hasattr(sub_module, 'weight'):
+                #                 sub_module.weight.requires_grad_(False)
+                #             if hasattr(sub_module, 'bias'):
+                #                 sub_module.bias.requires_grad_(False)
+
+                model.train()
 
     elif len(obs_raw.size()) == 2:
         pass

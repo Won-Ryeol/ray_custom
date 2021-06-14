@@ -89,10 +89,14 @@ class SlimConv2d(nn.Module):
         super(SlimConv2d, self).__init__()
         layers = []
         # Padding layer.
-        if padding:
-            layers.append(nn.ZeroPad2d(padding))
+        # if padding:
+        #     layers.append(nn.ZeroPad2d(padding))
         # Actual Conv2D layer (including correct initialization logic).
-        conv = nn.Conv2d(in_channels, out_channels, kernel, stride)
+        if padding:
+            padding = padding[0]
+            conv = nn.Conv2d(in_channels, out_channels, kernel, stride, padding)
+        else:
+            conv = nn.Conv2d(in_channels, out_channels, kernel, stride)
         if initializer:
             if initializer == "default":
                 initializer = nn.init.xavier_uniform_
