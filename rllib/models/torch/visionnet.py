@@ -156,7 +156,12 @@ class VisionNetwork(TorchModelV2, nn.Module):
     def forward(self, input_dict: Dict[str, TensorType],
                 state: List[TensorType],
                 seq_lens: TensorType) -> (TensorType, List[TensorType]):
-        self._features = input_dict["obs"].float() #.permute(0, 3, 1, 2)
+
+        self._features = input_dict["obs"].float()
+
+        if self._features.size(-1) == 3:
+            self._features = self._features.permute(0, 3, 1, 2)
+
         conv_out = self._convs(self._features)
         # Store features to save forward pass when getting value_function out.
         if not self._value_branch_separate:

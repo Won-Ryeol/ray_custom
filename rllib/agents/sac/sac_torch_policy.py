@@ -345,7 +345,7 @@ def actor_critic_loss(
                 for axis in range(3):
                     
                     # update GradCAM
-                    state = (obs * 255.0).float().permute(0,3,1,2)
+                    state = (obs * 255.0).float() #.permute(0,3,1,2)
                     action = model.gcam.forward(torch.unsqueeze(state[0], 0))
 
                     # (1) Get state image
@@ -399,7 +399,7 @@ def actor_critic_loss(
                 Path(xai_dir).mkdir(parents=True, exist_ok=True) # saliency_map_dir = make_saliency_dir(xai_dir)
                 
                 # update GradCAM
-                state = (obs * 255.0).float().permute(0,3,1,2)
+                state = (obs * 255.0).float() #.permute(0,3,1,2)
 
                 with FreezeParameters(model.parameters()):
                     saliency_map, scores= compute_saliency_maps(
@@ -408,7 +408,8 @@ def actor_critic_loss(
                         device = policy.device
                         )
                         
-                state = state[0].permute(1,2,0).detach().cpu().numpy() # .astype(np.uint8)
+                state = state[0].permute(1,2,0).detach().cpu().numpy().astype(np.uint8) # .astype(np.uint8)
+                # state = state[0].detach().cpu().numpy() # .astype(np.uint8)
                 state = cv2.resize(state, (150, 150), interpolation=cv2.INTER_LINEAR)
                 state = cv2.cvtColor(state, cv2.COLOR_RGB2BGR)
                 result_images = None
@@ -417,10 +418,10 @@ def actor_critic_loss(
 
                     min_val = smap.min()
                     max_val = smap.max()
-                    # smap = smap - min_val
-                    # smap = smap / (max_val - min_val) * 255
-                    smap = heatmap(smap.transpose(1, 2, 0)) * 255.0
-                    # smap = cv2.applyColorMap(smap[0].astype(np.uint8), cv2.COLORMAP_HOT)
+                    smap = smap - min_val
+                    smap = smap / (max_val - min_val) * 255
+                    # smap = heatmap(smap.transpose(1, 2, 0)) * 255.0
+                    smap = cv2.applyColorMap(smap.astype(np.uint8).transpose(1, 2, 0), cv2.COLORMAP_HOT)
                     smap = cv2.resize(smap, (150, 150), interpolation=cv2.INTER_LINEAR)
                     overlay = cv2.addWeighted(state, 1.0, smap, 0.5, 0)
                     result = np.hstack([state, smap, overlay])
@@ -453,10 +454,11 @@ def actor_critic_loss(
                 # TODO (chmin): check if tanh could be parsed.
                 act_infer_list = [model._convs, model._logits, SlimFlatten(), model.action_model]
                 lrp_model = convert_vision(act_infer_list).to(obs.device)
-                _ = lrp_model(obs.permute(0, 3, 1, 2)) # [B, 2 * A]
+                # _ = lrp_model(obs.permute(0, 3, 1, 2)) # [B, 2 * A]
+                _ = lrp_model(obs) # [B, 2 * A]
                 
 
-                input = obs.contiguous().detach().cpu().numpy()[0][None][0]
+                input = obs.contiguous().detach().cpu().numpy()[0][None][0].transpose(1, 2, 0)
 
                 #plot for each explanation
                 result_images = None
@@ -464,7 +466,9 @@ def actor_critic_loss(
                 for axis in range(3):
                     result = cv2.resize(input * 255, (150, 150), interpolation=cv2.INTER_LINEAR)
                     for _, (rule, pattern) in enumerate(explanations):
-                        attr, action[axis] = compute_and_plot_explanation(lrp_model, obs=obs[0][None].permute(0, 3, 1, 2), rule=rule, axis = axis, patterns=pattern)
+                        # attr, action[axis] = compute_and_plot_explanation(lrp_model, obs=obs[0][None].permute(0, 3, 1, 2), rule=rule, axis = axis, patterns=pattern)
+                        attr, action[axis] = compute_and_plot_explanation(lrp_model, obs=obs[0][None], rule=rule, axis = axis, patterns=pattern)
+                        attr = attr.permute(0, 2, 3, 1)
                         attr = heatmap(attr) * 255
                         attr = cv2.resize(attr[0], (150, 150), interpolation=cv2.INTER_LINEAR)
                         if result_images is None:
