@@ -332,8 +332,8 @@ def actor_critic_loss(
         
         actor_loss = torch.mean(alpha.detach() * log_pis_t - q_t_det_policy) + CFG.ACT_REG_WEIGHT * action_dist_norm
     
-
-    XAI_DIR = f'/home/wrkwak/xai_results/sac/{CFG.TASK}/{CFG.EXP_NAME}'
+    XAI_DIR = os.path.expanduser(f"~/xai_results/sac/{CFG.TASK}/{CFG.EXP_NAME}/")
+    # XAI_DIR = f'/home/wrkwak/xai_results/sac/{CFG.TASK}/{CFG.EXP_NAME}'
     # XAI
     if len(obs_raw.size()) == 4:
         model.step()
