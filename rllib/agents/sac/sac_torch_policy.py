@@ -42,6 +42,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 
+from torch.distributions import Categorical
 
 torch, nn = try_import_torch()
 F = nn.functional
@@ -332,12 +333,37 @@ def actor_critic_loss(
         
         actor_loss = torch.mean(alpha.detach() * log_pis_t - q_t_det_policy) + CFG.ACT_REG_WEIGHT * action_dist_norm
     
+        #* compute auxiliary loss
+        # raw_out = model.get_policy_output(model_out_t)
+
+        raw_action = action_dist_t.deterministic_sample() # [B, A]
+        raw_cart_x = CFG.ACTION_SCALE * raw_action[:, 0]
+        raw_cart_y = CFG.ACTION_SCALE * raw_action[:, 1]
+        raw_cart_z = CFG.Z_SCALE * raw_action[:, 2]
+
+        boundary = torch.tensor([-0.0004, 0.0004], device=obs_raw.device)
+        x_idx = torch.bucketize(raw_cart_x, boundary) # [B, ]
+        y_idx = torch.bucketize(raw_cart_y, boundary) # [B, ]
+        z_idx = torch.bucketize(raw_cart_z, boundary) # [B, ]
+
+        idx = (3**2 * x_idx + 3 * y_idx + z_idx).long()
+
+        act_logit = model.act_disc_model(model_out_t)
+        # act_aux_loss = Categorical(logits=act_logit) # [B, 27]
+        act_disc_loss = nn.CrossEntropyLoss()(act_logit, idx.long())
+        actor_loss = actor_loss + act_disc_loss
+
+        _, act_pred = torch.max(act_logit, dim=1)
+
+        x_idx_pred = act_pred // (3 ** 2) # [B, ]
+        y_idx_pred = (act_pred - (3 ** 2) * x_idx_pred) // 3
+        z_idx_pred = act_pred - (3 ** 2) * x_idx_pred - 3 * y_idx_pred
+
     XAI_DIR = os.path.expanduser(f"~/xai_results/sac/{CFG.TASK}/{CFG.EXP_NAME}/")
-    # XAI_DIR = f'/home/wrkwak/xai_results/sac/{CFG.TASK}/{CFG.EXP_NAME}'
     # XAI
     if len(obs_raw.size()) == 4:
         model.step()
-        if model.global_step % 500 == 0:
+        if model.global_step % CFG.XAI_EVERY == 0:
             obs = obs_raw
             if CFG.GCAM:
                 # Grad-CAM
@@ -347,6 +373,7 @@ def actor_critic_loss(
                     # update GradCAM
                     state = (obs * 255.0).float() #.permute(0,3,1,2)
                     action = model.gcam.forward(torch.unsqueeze(state[0], 0))
+                    boundary = torch.tensor([-0.3, 0.0, 0.3], device=obs.device)
 
                     # (1) Get state image
                     state = state[0].permute(1,2,0).detach().cpu().numpy().astype(np.uint8)
@@ -402,7 +429,7 @@ def actor_critic_loss(
                 state = (obs * 255.0).float() #.permute(0,3,1,2)
 
                 with FreezeParameters(model.parameters()):
-                    saliency_map, scores= compute_saliency_maps(
+                    saliency_map, scores = compute_saliency_maps(
                         state = state[0].unsqueeze(0),
                         model = model,
                         device = policy.device
@@ -450,16 +477,13 @@ def actor_critic_loss(
                 Path(xai_dir).mkdir(parents=True, exist_ok=True) # saliency_map_dir = make_saliency_dir(xai_dir)
 
                 model.eval()
-
                 # TODO (chmin): check if tanh could be parsed.
                 act_infer_list = [model._convs, model._logits, SlimFlatten(), model.action_model]
                 lrp_model = convert_vision(act_infer_list).to(obs.device)
                 # _ = lrp_model(obs.permute(0, 3, 1, 2)) # [B, 2 * A]
                 _ = lrp_model(obs) # [B, 2 * A]
                 
-
                 input = obs.contiguous().detach().cpu().numpy()[0][None][0].transpose(1, 2, 0)
-
                 #plot for each explanation
                 result_images = None
                 action = np.zeros(3)
@@ -503,23 +527,12 @@ def actor_critic_loss(
                     thickness=2,
                 )
                 cv2.imwrite(xai_dir + f'/test_step{model.global_step}.png', cv2.cvtColor(result_images, cv2.COLOR_RGB2BGR))
-
-
-                # for module in model.modules():
-                #     for sub_module in module.modules():
-                #         if isinstance(sub_module, nn.BatchNorm2d):
-                #             if hasattr(sub_module, 'weight'):
-                #                 sub_module.weight.requires_grad_(False)
-                #             if hasattr(sub_module, 'bias'):
-                #                 sub_module.bias.requires_grad_(False)
-
                 model.train()
 
     elif len(obs_raw.size()) == 2:
         pass
     else:
         raise ValueError
-
     
     # Save for stats function.
     policy.q_t = q_t
@@ -533,6 +546,8 @@ def actor_critic_loss(
     policy.alpha_value = alpha
     policy.target_entropy = model.target_entropy
     policy.action_dist_norm = action_dist_norm
+    policy.acttion_discretize_loss = act_disc_loss
+
 
     # Return all loss terms corresponding to our optimizers.
     return tuple([policy.actor_loss] + policy.critic_loss +

@@ -9,8 +9,11 @@ from ray.rllib.utils.framework import get_activation_fn, try_import_torch
 from ray.rllib.utils.spaces.simplex import Simplex
 from ray.rllib.utils.typing import ModelConfigDict, TensorType
 
+from ray.rllib.models.torch.torch_action_dist import (
+    TorchCategorical)
+
 import sys
-sys.path.append("/home/wrkwak/gatsbi_rl")
+# sys.path.append("/home/wrkwak/gatsbi_rl")
 from gradcam.grad_cam import GradCAM
 
 torch, nn = try_import_torch()
@@ -110,6 +113,15 @@ class SACTorchModel(TorchModelV2, nn.Module):
                 action_outs,
                 initializer=torch.nn.init.xavier_uniform_,
                 activation_fn=None))
+
+        # seperate head from action_model.
+        self.act_disc_model = nn.Sequential(
+            nn.Linear(self.obs_ins, 256),
+            nn.ReLU(),
+            nn.Linear(256, 256),
+            nn.ReLU(),
+            nn.Linear(256, 27) # this should be bucketized.
+        )
 
         # Build the Q-net(s), including target Q-net(s).
         def build_q_net(name_):
