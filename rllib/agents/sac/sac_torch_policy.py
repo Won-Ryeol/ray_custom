@@ -144,6 +144,8 @@ def action_distribution_fn(
             The dist inputs, dist class, and a list of internal state outputs
             (in the RNN case).
     """
+    if len(obs_batch.size()) != 4:
+        obs_batch = obs_batch.squeeze(0) # if episode reset
     # Get base-model output (w/o the SAC specific parts of the network).
     model_out, _ = model({
         "obs": obs_batch,
@@ -154,6 +156,8 @@ def action_distribution_fn(
     distribution_inputs = model.get_policy_output(model_out)
     # Get a distribution class to be used with the just calculated dist-inputs.
     action_dist_class = _get_dist_class(policy.config, policy.action_space)
+    
+    # model.episode_obs = 
 
     return distribution_inputs, action_dist_class, []
 
@@ -335,9 +339,9 @@ def actor_critic_loss(
 
     XAI_DIR = f'/home/wrkwak/xai_results/sac/{CFG.TASK}/{CFG.EXP_NAME}'
     # XAI
-    if len(obs_raw.size()) == 4:
+    if CFG.OBS_TYPE == 'vision':
         model.step()
-        if model.global_step % 500 == 0:
+        if model.global_step % CFG.XAI_INTERVAL == 0:
             obs = obs_raw
             if CFG.GCAM:
                 # Grad-CAM
@@ -415,8 +419,8 @@ def actor_critic_loss(
                 for smap in saliency_map:
                     smap = smap.detach().cpu().numpy()
 
-                    min_val = smap.min()
-                    max_val = smap.max()
+                    # min_val = smap.min()
+                    # max_val = smap.max()
                     # smap = smap - min_val
                     # smap = smap / (max_val - min_val) * 255
                     smap = heatmap(smap.transpose(1, 2, 0)) * 255.0
@@ -511,7 +515,7 @@ def actor_critic_loss(
 
                 model.train()
 
-    elif len(obs_raw.size()) == 2:
+    elif CFG.OBS_TYPE == 'state':
         pass
     else:
         raise ValueError

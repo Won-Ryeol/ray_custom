@@ -8,6 +8,7 @@ from ray.rllib.models.torch.torch_modelv2 import TorchModelV2
 from ray.rllib.utils.framework import get_activation_fn, try_import_torch
 from ray.rllib.utils.spaces.simplex import Simplex
 from ray.rllib.utils.typing import ModelConfigDict, TensorType
+from gatsbi_rl.baselines.slide_to_target_config import CFG
 
 import sys
 sys.path.append("/home/wrkwak/gatsbi_rl")
@@ -165,7 +166,8 @@ class SACTorchModel(TorchModelV2, nn.Module):
     
         self.gcam = GradCAM(self)
         # self.task_name = 
-
+        self.episode_obs = np.zeros((CFG.HORIZON, 64, 64, 3))
+    
     def step(self):
         self.global_step += 1
 
