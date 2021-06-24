@@ -166,7 +166,8 @@ class SACTorchModel(TorchModelV2, nn.Module):
     
         self.gcam = GradCAM(self)
         # self.task_name = 
-        self.episode_obs = np.zeros((CFG.HORIZON, 64, 64, 3))
+        # self.episode_obs = np.zeros((CFG.HORIZON, 64, 64, 3))
+        self.episode_obs = torch.zeros((1, CFG.HORIZON, 64, 64, 3))
     
     def step(self):
         self.global_step += 1

@@ -36,6 +36,9 @@ from gatsbi_rl.gradcam.lrp import convert_vision
 from gatsbi_rl.gradcam.lrp.visualize import *
 from gatsbi_rl.gradcam.lrp.converter import SlimFlatten
 
+# visualize as gif.
+from gatsbi_rl.gatsbi.visualize import * # import all function
+
 import cv2
 import numpy as np
 from pathlib import Path
@@ -144,8 +147,14 @@ def action_distribution_fn(
             The dist inputs, dist class, and a list of internal state outputs
             (in the RNN case).
     """
-    if len(obs_batch.size()) != 4:
-        obs_batch = obs_batch.squeeze(0) # if episode reset
+    if len(obs_batch.size()) != 4: 
+        #* weird handling, but okay. Signal for the start of each episode.
+        obs_batch = obs_batch.squeeze(0) # if episode reset; [1, 64, 64, 3]
+        if hasattr(model, 'episodic_step'):
+            setattr(model, 'vis_episode', model.episode_obs[:, :model.episodic_step]) # slice upto episode length.
+            # setattr(model, 'is_vis', True)
+        setattr(model, 'episodic_step', 0)
+
     # Get base-model output (w/o the SAC specific parts of the network).
     model_out, _ = model({
         "obs": obs_batch,
@@ -158,6 +167,10 @@ def action_distribution_fn(
     action_dist_class = _get_dist_class(policy.config, policy.action_space)
     
     # model.episode_obs = 
+
+    if hasattr(model, 'episodic_step'):
+        model.episode_obs[:, model.episodic_step] = obs_batch
+        model.episodic_step += 1        
 
     return distribution_inputs, action_dist_class, []
 
@@ -534,6 +547,18 @@ def actor_critic_loss(
     policy.target_entropy = model.target_entropy
     policy.action_dist_norm = action_dist_norm
 
+    # visualization
+    if policy.global_timestep % 1000 == 0 and hasattr(model, 'episodic_step'):
+        policy.vis_episode = model.vis_episode
+
+        # TODO (chmin): process as video (gif) here.
+
+
+
+
+
+
+
     # Return all loss terms corresponding to our optimizers.
     return tuple([policy.actor_loss] + policy.critic_loss +
                  [policy.alpha_loss])
@@ -549,6 +574,12 @@ def stats(policy: Policy, train_batch: SampleBatch) -> Dict[str, TensorType]:
     Returns:
         Dict[str, TensorType]: The stats dict.
     """
+    if policy.global_timestep % 1000 == 0 and hasattr(policy, 'vis_episode'):
+        episode_gif = policy.vis_episode.permute(0, 1, 4, 2, 3)
+    else:
+        episode_gif = None
+
+
     return {
         "td_error": policy.td_error,
         "mean_td_error": torch.mean(policy.td_error),
@@ -563,6 +594,7 @@ def stats(policy: Policy, train_batch: SampleBatch) -> Dict[str, TensorType]:
         "max_q": torch.max(policy.q_t),
         "min_q": torch.min(policy.q_t),
         "action_dist_norm" : policy.action_dist_norm,
+        "episode_gif": episode_gif
     }
 
 

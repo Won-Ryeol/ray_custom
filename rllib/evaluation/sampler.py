@@ -1133,7 +1133,13 @@ def _process_observations_w_trajectory_view_api(
                     env_id)
             # Reset not supported, drop this env from the ready list.
             
-            resetted_obs['agent0'] = resetted_obs['agent0'][None]
+            # resetted_obs['agent0'] = resetted_obs['agent0'][None]
+
+            if len(resetted_obs['agent0'].shape) == 3:
+                print('length is 3')
+            if len(resetted_obs['agent0'].shape) == 4:
+                print('length is 4')
+
             if resetted_obs is None:
                 if horizon != float("inf"):
                     raise ValueError(
@@ -1153,13 +1159,13 @@ def _process_observations_w_trajectory_view_api(
                 # type: AgentID, EnvObsType
                 for agent_id, raw_obs in resetted_obs.items():
                     policy_id: PolicyID = new_episode.policy_for(agent_id)
+                    raw_obs = raw_obs.squeeze()
                     prep_obs: EnvObsType = _get_or_raise(
                         preprocessors, policy_id).transform(raw_obs)
                     filtered_obs: EnvObsType = _get_or_raise(
                         obs_filters, policy_id)(prep_obs)
                     new_episode._set_last_observation(agent_id, filtered_obs)
-                    if len(filtered_obs.shape) != 4:
-                        filtered_obs = filtered_obs.squeeze(0)
+
                     # Add initial obs to buffer.
                     _sample_collector.add_init_obs(
                         new_episode, agent_id, env_id, policy_id,

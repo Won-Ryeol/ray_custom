@@ -62,7 +62,7 @@ class Preprocessor:
                 if not self._obs_space.contains(observation):
                     raise ValueError(
                         "Observation ({}) outside given space ({})!",
-                        observation, self._obs_space)
+                        observation.shape, self._obs_space)
             except AttributeError:
                 raise ValueError(
                     "Observation for a Box/MultiBinary/MultiDiscrete space "
