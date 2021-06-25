@@ -36,6 +36,9 @@ from gatsbi_rl.gradcam.lrp import convert_vision
 from gatsbi_rl.gradcam.lrp.visualize import *
 from gatsbi_rl.gradcam.lrp.converter import SlimFlatten
 
+# visualize as gif.
+from gatsbi_rl.gatsbi.visualize import * # import all function
+
 import cv2
 import numpy as np
 from pathlib import Path
@@ -145,6 +148,14 @@ def action_distribution_fn(
             The dist inputs, dist class, and a list of internal state outputs
             (in the RNN case).
     """
+    if len(obs_batch.size()) != 4: 
+        #* weird handling, but okay. Signal for the start of each episode.
+        obs_batch = obs_batch.squeeze(0) # if episode reset; [1, 64, 64, 3]
+        if hasattr(model, 'episodic_step'):
+            setattr(model, 'vis_episode', model.episode_obs[:, :model.episodic_step]) # slice upto episode length.
+            # setattr(model, 'is_vis', True)
+        setattr(model, 'episodic_step', 0)
+
     # Get base-model output (w/o the SAC specific parts of the network).
     model_out, _ = model({
         "obs": obs_batch,
@@ -155,6 +166,12 @@ def action_distribution_fn(
     distribution_inputs = model.get_policy_output(model_out)
     # Get a distribution class to be used with the just calculated dist-inputs.
     action_dist_class = _get_dist_class(policy.config, policy.action_space)
+    
+    # model.episode_obs = 
+
+    if hasattr(model, 'episodic_step'):
+        model.episode_obs[:, model.episodic_step] = obs_batch
+        model.episodic_step += 1        
 
     return distribution_inputs, action_dist_class, []
 
@@ -361,9 +378,9 @@ def actor_critic_loss(
 
     XAI_DIR = os.path.expanduser(f"~/xai_results/sac/{CFG.TASK}/{CFG.EXP_NAME}/")
     # XAI
-    if len(obs_raw.size()) == 4:
+    if CFG.OBS_TYPE == 'vision':
         model.step()
-        if model.global_step % CFG.XAI_EVERY == 0:
+        if model.global_step % CFG.XAI_INTERVAL == 0:
             obs = obs_raw
             if CFG.GCAM:
                 # Grad-CAM
@@ -443,12 +460,12 @@ def actor_critic_loss(
                 for smap in saliency_map:
                     smap = smap.detach().cpu().numpy()
 
-                    min_val = smap.min()
-                    max_val = smap.max()
-                    smap = smap - min_val
-                    smap = smap / (max_val - min_val) * 255
-                    # smap = heatmap(smap.transpose(1, 2, 0)) * 255.0
-                    smap = cv2.applyColorMap(smap.astype(np.uint8).transpose(1, 2, 0), cv2.COLORMAP_HOT)
+                    # min_val = smap.min()
+                    # max_val = smap.max()
+                    # smap = smap - min_val
+                    # smap = smap / (max_val - min_val) * 255
+                    smap = heatmap(smap.transpose(1, 2, 0)) * 255.0
+                    # smap = cv2.applyColorMap(smap[0].astype(np.uint8), cv2.COLORMAP_HOT)
                     smap = cv2.resize(smap, (150, 150), interpolation=cv2.INTER_LINEAR)
                     overlay = cv2.addWeighted(state, 1.0, smap, 0.5, 0)
                     result = np.hstack([state, smap, overlay])
@@ -529,7 +546,7 @@ def actor_critic_loss(
                 cv2.imwrite(xai_dir + f'/test_step{model.global_step}.png', cv2.cvtColor(result_images, cv2.COLOR_RGB2BGR))
                 model.train()
 
-    elif len(obs_raw.size()) == 2:
+    elif CFG.OBS_TYPE == 'state':
         pass
     else:
         raise ValueError
@@ -549,6 +566,18 @@ def actor_critic_loss(
     policy.acttion_discretize_loss = act_disc_loss
 
 
+    # visualization
+    if policy.global_timestep % 1000 == 0 and hasattr(model, 'episodic_step'):
+        policy.vis_episode = model.vis_episode
+
+        # TODO (chmin): process as video (gif) here.
+
+
+
+
+
+
+
     # Return all loss terms corresponding to our optimizers.
     return tuple([policy.actor_loss] + policy.critic_loss +
                  [policy.alpha_loss])
@@ -564,6 +593,12 @@ def stats(policy: Policy, train_batch: SampleBatch) -> Dict[str, TensorType]:
     Returns:
         Dict[str, TensorType]: The stats dict.
     """
+    if policy.global_timestep % 1000 == 0 and hasattr(policy, 'vis_episode'):
+        episode_gif = policy.vis_episode.permute(0, 1, 4, 2, 3)
+    else:
+        episode_gif = None
+
+
     return {
         "td_error": policy.td_error,
         "mean_td_error": torch.mean(policy.td_error),
@@ -578,6 +613,7 @@ def stats(policy: Policy, train_batch: SampleBatch) -> Dict[str, TensorType]:
         "max_q": torch.max(policy.q_t),
         "min_q": torch.min(policy.q_t),
         "action_dist_norm" : policy.action_dist_norm,
+        "episode_gif": episode_gif
     }
 
 

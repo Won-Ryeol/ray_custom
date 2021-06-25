@@ -158,6 +158,8 @@ class PrioritizedReplayBuffer(ReplayBuffer):
     @DeveloperAPI
     def add(self, item: SampleBatchType, weight: float):
         idx = self._next_idx
+        if len(item['obs'].shape) != 4:
+            item['obs'] = item['obs'].squeeze(0)
         super(PrioritizedReplayBuffer, self).add(item, weight)
         if weight is None:
             weight = self._max_priority
