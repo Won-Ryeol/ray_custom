@@ -1135,11 +1135,6 @@ def _process_observations_w_trajectory_view_api(
             
             # resetted_obs['agent0'] = resetted_obs['agent0'][None]
 
-            if len(resetted_obs['agent0'].shape) == 3:
-                print('length is 3')
-            if len(resetted_obs['agent0'].shape) == 4:
-                print('length is 4')
-
             if resetted_obs is None:
                 if horizon != float("inf"):
                     raise ValueError(
@@ -1159,9 +1154,11 @@ def _process_observations_w_trajectory_view_api(
                 # type: AgentID, EnvObsType
                 for agent_id, raw_obs in resetted_obs.items():
                     policy_id: PolicyID = new_episode.policy_for(agent_id)
-                    raw_obs = raw_obs.squeeze()
+                    # TODO (chmin): check if unsqueezing raises an error
                     prep_obs: EnvObsType = _get_or_raise(
                         preprocessors, policy_id).transform(raw_obs)
+                    print("obs_max: {} obs_min: {} obs_shape: {}".format(prep_obs.max(), prep_obs.min(), prep_obs.shape))
+                    prep_obs = prep_obs[None] # 
                     filtered_obs: EnvObsType = _get_or_raise(
                         obs_filters, policy_id)(prep_obs)
                     new_episode._set_last_observation(agent_id, filtered_obs)

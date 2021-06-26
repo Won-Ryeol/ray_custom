@@ -150,7 +150,7 @@ def action_distribution_fn(
     """
     if len(obs_batch.size()) != 4: 
         #* weird handling, but okay. Signal for the start of each episode.
-        obs_batch = obs_batch.squeeze(0) # if episode reset; [1, 64, 64, 3]
+        obs_batch = obs_batch.squeeze(0) # if episode reset; [1, 3, 64, 64]
         if hasattr(model, 'episodic_step'):
             setattr(model, 'vis_episode', model.episode_obs[:, :model.episodic_step]) # slice upto episode length.
             # setattr(model, 'is_vis', True)
@@ -594,7 +594,7 @@ def stats(policy: Policy, train_batch: SampleBatch) -> Dict[str, TensorType]:
         Dict[str, TensorType]: The stats dict.
     """
     if policy.global_timestep % 1000 == 0 and hasattr(policy, 'vis_episode'):
-        episode_gif = policy.vis_episode.permute(0, 1, 4, 2, 3)
+        episode_gif = policy.vis_episode #.permute(0, 1, 4, 2, 3)
     else:
         episode_gif = None
 
