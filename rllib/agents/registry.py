@@ -95,9 +95,13 @@ def _import_ppo():
     return ppo.PPOTrainer
 
 
-# def _import_qmix():
-#     from ray.rllib.agents import qmix
-#     return qmix.QMixTrainer
+def _import_qmix():
+    from ray.rllib.agents import qmix
+    return qmix.QMixTrainer
+
+def _import_rnnsac():
+    from ray.rllib.agents import sac
+    return sac.RNNSACTrainer
 
 
 def _import_sac():
@@ -142,6 +146,7 @@ ALGORITHMS = {
     "PPO": _import_ppo,
     # "QMIX": _import_qmix,
     "SAC": _import_sac,
+    "SAC": _import_rnnsac,
     "SimpleQ": _import_simple_q,
     "TD3": _import_td3,
 }

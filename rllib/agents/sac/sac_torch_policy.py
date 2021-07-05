@@ -151,6 +151,7 @@ def action_distribution_fn(
     if len(obs_batch.size()) != 4 and CFG.OBS_TYPE == 'vision': # exception for full state
         #* weird handling, but okay. Signal for the start of each episode.
         obs_batch = obs_batch.squeeze(0) # if episode reset; [1, 3, 64, 64]
+
         if hasattr(model, 'episodic_step'):
             setattr(model, 'vis_episode', model.episode_obs[:, :model.episodic_step]) # slice upto episode length.
             # setattr(model, 'is_vis', True)
@@ -170,7 +171,7 @@ def action_distribution_fn(
     # model.episode_obs = 
 
     if hasattr(model, 'episodic_step') and CFG.OBS_TYPE == 'vision':
-        model.episode_obs[:, model.episodic_step] = obs_batch
+        model.episode_obs[:, model.episodic_step] = obs_batch # [1, 3, 64, 64]
         model.episodic_step += 1        
 
     return distribution_inputs, action_dist_class, []

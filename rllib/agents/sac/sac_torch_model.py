@@ -42,14 +42,11 @@ class SACTorchModel(TorchModelV2, nn.Module):
                  num_outputs: Optional[int],
                  model_config: ModelConfigDict,
                  name: str,
-                 actor_hidden_activation: str = "relu",
-                 actor_hiddens: Tuple[int] = (256, 256),
-                 critic_hidden_activation: str = "relu",
-                 critic_hiddens: Tuple[int] = (256, 256),
+                 policy_model_config: ModelConfigDict = None,
+                 q_model_config: ModelConfigDict = None,
                  twin_q: bool = False,
                  initial_alpha: float = 1.0,
-                 target_entropy: Optional[float] = None,
-                 global_step: int = 0):
+                 target_entropy: Optional[float] = None):
         """
         Initializes a SACTorchModel instance.
         Args:
@@ -73,23 +70,39 @@ class SACTorchModel(TorchModelV2, nn.Module):
         super(SACTorchModel, self).__init__(obs_space, action_space,
                                             num_outputs, model_config, name)
 
+        # if isinstance(action_space, Discrete):
+        #     self.action_dim = action_space.n
+        #     self.discrete = True
+        #     action_outs = q_outs = self.action_dim
+        #     action_ins = None  # No action inputs for the discrete case.
+        # elif isinstance(action_space, Box):
+        #     self.action_dim = np.product(action_space.shape)
+        #     self.discrete = False
+        #     action_outs = 2 * self.action_dim
+        #     action_ins = self.action_dim
+        #     q_outs = 1
+        # else:
+        #     assert isinstance(action_space, Simplex)
+        #     self.action_dim = np.product(action_space.shape)
+        #     self.discrete = False
+        #     action_outs = self.action_dim
+        #     action_ins = self.action_dim
+        #     q_outs = 1
+
         if isinstance(action_space, Discrete):
             self.action_dim = action_space.n
             self.discrete = True
             action_outs = q_outs = self.action_dim
-            action_ins = None  # No action inputs for the discrete case.
         elif isinstance(action_space, Box):
             self.action_dim = np.product(action_space.shape)
             self.discrete = False
             action_outs = 2 * self.action_dim
-            action_ins = self.action_dim
             q_outs = 1
         else:
             assert isinstance(action_space, Simplex)
             self.action_dim = np.product(action_space.shape)
             self.discrete = False
             action_outs = self.action_dim
-            action_ins = self.action_dim
             q_outs = 1
 
         # Build the policy network.
@@ -116,13 +129,7 @@ class SACTorchModel(TorchModelV2, nn.Module):
                 activation_fn=None))
 
         # seperate head from action_model.
-        self.act_disc_model = nn.Sequential(
-            nn.Linear(self.obs_ins, 256),
-            nn.ReLU(),
-            nn.Linear(256, 256),
-            nn.ReLU(),
-            nn.Linear(256, 27) # this should be bucketized.
-        )
+
 
         # Build the Q-net(s), including target Q-net(s).
         def build_q_net(name_):
@@ -174,11 +181,17 @@ class SACTorchModel(TorchModelV2, nn.Module):
         self.target_entropy = torch.tensor(
             data=[target_entropy], dtype=torch.float32, requires_grad=False)
 
+        # TODO (Chmin): newly added features below.
+
+        self.act_disc_model = nn.Sequential(
+            nn.Linear(self.obs_ins, 256),
+            nn.ReLU(),
+            nn.Linear(256, 256),
+            nn.ReLU(),
+            nn.Linear(256, 27) # this should be bucketized.
+        )
         self.global_step = 0
-    
         self.gcam = GradCAM(self)
-        # self.task_name = 
-        # self.episode_obs = np.zeros((CFG.HORIZON, 64, 64, 3))
         self.episode_obs = torch.zeros((1, CFG.HORIZON, 3, 64, 64))
     
     def step(self):

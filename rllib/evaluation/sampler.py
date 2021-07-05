@@ -1157,7 +1157,7 @@ def _process_observations_w_trajectory_view_api(
                     # TODO (chmin): check if unsqueezing raises an error
                     prep_obs: EnvObsType = _get_or_raise(
                         preprocessors, policy_id).transform(raw_obs)
-                    print("obs_max: {} obs_min: {} obs_shape: {}".format(prep_obs.max(), prep_obs.min(), prep_obs.shape))
+                    # print("obs_max: {} obs_min: {} obs_shape: {}".format(prep_obs.max(), prep_obs.min(), prep_obs.shape))
                     prep_obs = prep_obs[None] # 
                     filtered_obs: EnvObsType = _get_or_raise(
                         obs_filters, policy_id)(prep_obs)
