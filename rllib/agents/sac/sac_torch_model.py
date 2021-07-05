@@ -227,8 +227,6 @@ class SACTorchModel(TorchModelV2, nn.Module):
 
     def get_twin_q_values(self,
                           model_out: TensorType,
-                          state_in: List[TensorType],
-                          seq_lens: TensorType,
                           actions: Optional[TensorType] = None) -> TensorType:
         """Same as get_q_values but using the twin Q net.
 

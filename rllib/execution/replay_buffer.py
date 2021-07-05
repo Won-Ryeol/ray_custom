@@ -158,8 +158,14 @@ class PrioritizedReplayBuffer(ReplayBuffer):
     @DeveloperAPI
     def add(self, item: SampleBatchType, weight: float):
         idx = self._next_idx
-        if len(item['obs'].shape) != 4:
+        # TODO (chmin): should find much smarter way to do this.
+        # squeeze the observation dimension at the start of each episode.
+        if len(item['obs'].shape) == 5: # vision 
             item['obs'] = item['obs'].squeeze(0)
+
+        if len(item['obs'].shape) == 3: # state
+            item['obs'] = item['obs'].squeeze(0)
+
         super(PrioritizedReplayBuffer, self).add(item, weight)
         if weight is None:
             weight = self._max_priority

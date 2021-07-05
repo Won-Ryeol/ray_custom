@@ -156,6 +156,15 @@ def action_distribution_fn(
             setattr(model, 'vis_episode', model.episode_obs[:, :model.episodic_step]) # slice upto episode length.
             # setattr(model, 'is_vis', True)
         setattr(model, 'episodic_step', 0)
+    # TODO(chmin): reset handling for fully observable agent
+    if len(obs_batch.size()) == 3 and CFG.OBS_TYPE == 'state':
+        obs_batch = obs_batch.squeeze(0) # if episode reset; [1, 3, 64, 64]
+        if hasattr(model, 'episodic_step'):
+            # TODO (chmin): add visualization2
+            pass 
+        setattr(model, 'episodic_step', 0)
+
+
 
     # Get base-model output (w/o the SAC specific parts of the network).
     model_out, _ = model({
@@ -170,9 +179,15 @@ def action_distribution_fn(
     
     # model.episode_obs = 
 
+    # TODO (chmin): optimize conditioning.
     if hasattr(model, 'episodic_step') and CFG.OBS_TYPE == 'vision':
         model.episode_obs[:, model.episodic_step] = obs_batch # [1, 3, 64, 64]
         model.episodic_step += 1        
+    if hasattr(model, 'episodic_step') and CFG.OBS_TYPE == 'state':
+        model.episodic_step += 1        
+
+
+
 
     return distribution_inputs, action_dist_class, []
 
@@ -568,7 +583,8 @@ def actor_critic_loss(
 
 
     # visualization
-    if policy.global_timestep % 1000 == 0 and hasattr(model, 'episodic_step'):
+    if (policy.global_timestep % 1000 == 0 and hasattr(model, 'episodic_step')
+        and hasattr(model, 'vis_episode')):
         policy.vis_episode = model.vis_episode
         # TODO (chmin): process as video (gif) here.
 
