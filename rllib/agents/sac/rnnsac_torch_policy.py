@@ -15,7 +15,8 @@ from ray.rllib.policy.policy import Policy
 from ray.rllib.policy.sample_batch import SampleBatch
 from ray.rllib.utils.torch_ops import huber_loss, sequence_mask
 from ray.rllib.utils.typing import \
-    ModelInputDict, TensorType, TrainerConfigDict
+    TensorType, TrainerConfigDict
+    # ModelInputDict, TensorType, TrainerConfigDict
 from torch.nn import functional as F
 
 
@@ -112,7 +113,8 @@ def build_sac_model_and_action_dist(
 def action_distribution_fn(
         policy: Policy,
         model: ModelV2,
-        input_dict: ModelInputDict,
+        # TODO (chmin): make "input_dict" compatiable
+        input_dict: TensorType,
         *,
         state_batches: Optional[List[TensorType]] = None,
         seq_lens: Optional[TensorType] = None,

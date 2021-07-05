@@ -21,7 +21,8 @@ DEFAULT_CONFIG = SACTrainer.merge_trainer_configs(
         # it (as initial state when running through the network for training),
         # and update that initial state during training (from the internal
         # state outputs of the immediately preceding sequence).
-        "zero_init_states": True,
+        # TODO (chmin): revive zero_init_states
+        # "zero_init_states": True,
         # If > 0, use the `burn_in` first steps of each replay-sampled sequence
         # (starting either from all 0.0-values if `zero_init_state=True` or
         # from the already stored values) to calculate an even more accurate

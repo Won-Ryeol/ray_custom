@@ -1,19 +1,32 @@
 import gym
 from gym.spaces import Box, Discrete
 import numpy as np
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 
 from ray.rllib.models.torch.misc import SlimFC
 from ray.rllib.models.torch.torch_modelv2 import TorchModelV2
 from ray.rllib.utils.framework import get_activation_fn, try_import_torch
 from ray.rllib.utils.spaces.simplex import Simplex
 from ray.rllib.utils.typing import ModelConfigDict, TensorType
+
+# import gym
+# from gym.spaces import Box, Discrete
+# import numpy as np
+# from typing import Dict, List, Optional, Tuple
+
+# from ray.rllib.models.catalog import ModelCatalog
+# from ray.rllib.models.torch.torch_modelv2 import TorchModelV2
+# from ray.rllib.utils import force_list
+# from ray.rllib.utils.annotations import override
+# from ray.rllib.utils.framework import try_import_torch
+# from ray.rllib.utils.spaces.simplex import Simplex
+# from ray.rllib.utils.typing import ModelConfigDict, TensorType
+
 from gatsbi_rl.baselines.slide_to_target_config import CFG
 
-from ray.rllib.models.torch.torch_action_dist import (
-    TorchCategorical)
-
 import sys
+
+from torch.functional import Tensor
 # sys.path.append("/home/wrkwak/gatsbi_rl")
 from gradcam.grad_cam import GradCAM
 
@@ -42,11 +55,14 @@ class SACTorchModel(TorchModelV2, nn.Module):
                  num_outputs: Optional[int],
                  model_config: ModelConfigDict,
                  name: str,
-                 policy_model_config: ModelConfigDict = None,
-                 q_model_config: ModelConfigDict = None,
+                 actor_hidden_activation: str = "relu",
+                 actor_hiddens: Tuple[int] = (256, 256),
+                 critic_hidden_activation: str = "relu",
+                 critic_hiddens: Tuple[int] = (256, 256),
                  twin_q: bool = False,
                  initial_alpha: float = 1.0,
-                 target_entropy: Optional[float] = None):
+                 target_entropy: Optional[float] = None,
+                 global_step: int = 0):
         """
         Initializes a SACTorchModel instance.
         Args:
@@ -70,40 +86,27 @@ class SACTorchModel(TorchModelV2, nn.Module):
         super(SACTorchModel, self).__init__(obs_space, action_space,
                                             num_outputs, model_config, name)
 
-        # if isinstance(action_space, Discrete):
-        #     self.action_dim = action_space.n
-        #     self.discrete = True
-        #     action_outs = q_outs = self.action_dim
-        #     action_ins = None  # No action inputs for the discrete case.
-        # elif isinstance(action_space, Box):
-        #     self.action_dim = np.product(action_space.shape)
-        #     self.discrete = False
-        #     action_outs = 2 * self.action_dim
-        #     action_ins = self.action_dim
-        #     q_outs = 1
-        # else:
-        #     assert isinstance(action_space, Simplex)
-        #     self.action_dim = np.product(action_space.shape)
-        #     self.discrete = False
-        #     action_outs = self.action_dim
-        #     action_ins = self.action_dim
-        #     q_outs = 1
-
         if isinstance(action_space, Discrete):
             self.action_dim = action_space.n
             self.discrete = True
             action_outs = q_outs = self.action_dim
+            action_ins = None  # No action inputs for the discrete case.
         elif isinstance(action_space, Box):
             self.action_dim = np.product(action_space.shape)
             self.discrete = False
             action_outs = 2 * self.action_dim
+            action_ins = self.action_dim
             q_outs = 1
         else:
             assert isinstance(action_space, Simplex)
             self.action_dim = np.product(action_space.shape)
             self.discrete = False
             action_outs = self.action_dim
+            action_ins = self.action_dim
             q_outs = 1
+
+        # TODO (chmin): both the action model and q_net should receive 
+        # TODO: 'states_in' as input.
 
         # Build the policy network.
         self.action_model = nn.Sequential()
@@ -224,6 +227,8 @@ class SACTorchModel(TorchModelV2, nn.Module):
 
     def get_twin_q_values(self,
                           model_out: TensorType,
+                          state_in: List[TensorType],
+                          seq_lens: TensorType,
                           actions: Optional[TensorType] = None) -> TensorType:
         """Same as get_q_values but using the twin Q net.
 
