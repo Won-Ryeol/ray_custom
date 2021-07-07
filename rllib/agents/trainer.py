@@ -566,7 +566,8 @@ class Trainer(Trainable):
                         pybullet_envs.getList()
                     except (ModuleNotFoundError, ImportError):
                         pass
-                    return gym.make(env, **env_context)
+                    # return gym.make(env, **env_context)
+                    return gym.make(env, render_mode='rgb_array')
 
                 self.env_creator = _creator
         else:

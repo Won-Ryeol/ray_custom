@@ -612,6 +612,9 @@ def _env_runner(
         # Do batched policy eval (accross vectorized envs).
         t2 = time.time()
         # type: Dict[PolicyID, Tuple[TensorStructType, StateBatch, dict]]
+        # TODO (chmin): tentaive
+        obs = worker.env.render(mode='rbg_array')
+        
         if _use_trajectory_view_api:
             eval_results = _do_policy_eval_w_trajectory_view_api(
                 to_eval=to_eval,
