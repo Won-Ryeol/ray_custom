@@ -148,6 +148,9 @@ def action_distribution_fn(
             The dist inputs, dist class, and a list of internal state outputs
             (in the RNN case).
     """
+    if "vis" in obs_batch:
+        vis_step = obs_batch['vis'].permute(2, 0, 1)
+        obs_batch = obs_batch['obs']
     if len(obs_batch.size()) != 4 and CFG.OBS_TYPE == 'vision': # exception for full state
         #* weird handling, but okay. Signal for the start of each episode.
         obs_batch = obs_batch.squeeze(0) # if episode reset; [1, 3, 64, 64]
@@ -160,8 +163,8 @@ def action_distribution_fn(
     if len(obs_batch.size()) == 3 and CFG.OBS_TYPE == 'state':
         obs_batch = obs_batch.squeeze(0) # if episode reset; [1, 3, 64, 64]
         if hasattr(model, 'episodic_step'):
+            setattr(model, 'vis_episode', model.episode_obs[:, :model.episodic_step])
             # TODO (chmin): add visualization2
-            pass 
         setattr(model, 'episodic_step', 0)
 
 
@@ -184,6 +187,7 @@ def action_distribution_fn(
         model.episode_obs[:, model.episodic_step] = obs_batch # [1, 3, 64, 64]
         model.episodic_step += 1        
     if hasattr(model, 'episodic_step') and CFG.OBS_TYPE == 'state':
+        model.episode_obs[:, model.episodic_step] = vis_step[None] # [1, 3, 64, 64]
         model.episodic_step += 1        
 
 
@@ -605,7 +609,7 @@ def stats(policy: Policy, train_batch: SampleBatch) -> Dict[str, TensorType]:
     Returns:
         Dict[str, TensorType]: The stats dict.
     """
-    if policy.global_timestep % 1000 == 0 and hasattr(policy, 'vis_episode') and CFG.OBS_TYPE == 'vision':
+    if policy.global_timestep % CFG.VIS_EVERY == 0 and hasattr(policy, 'vis_episode'):
         episode_gif = policy.vis_episode #.permute(0, 1, 4, 2, 3)
     else:
         episode_gif = None
