@@ -38,7 +38,8 @@ class VisionNetwork(TorchModelV2, nn.Module):
         self._logits = None
 
         layers = []
-        (w, h, in_channels) = obs_space.shape
+        # TODO (chmin): make it more compatiable.
+        (in_channels, w, h) = obs_space.shape
         in_size = [w, h]
         for out_channels, kernel, stride in filters[:-1]:
             padding, out_size = same_padding(in_size, kernel, [stride, stride])
@@ -111,7 +112,8 @@ class VisionNetwork(TorchModelV2, nn.Module):
                 activation_fn=None)
         else:
             vf_layers = []
-            (w, h, in_channels) = obs_space.shape
+            # (w, h, in_channels) = obs_space.shape
+            (in_channels, w, h) = obs_space.shape
             in_size = [w, h]
             for out_channels, kernel, stride in filters[:-1]:
                 padding, out_size = same_padding(in_size, kernel,
@@ -154,7 +156,12 @@ class VisionNetwork(TorchModelV2, nn.Module):
     def forward(self, input_dict: Dict[str, TensorType],
                 state: List[TensorType],
                 seq_lens: TensorType) -> (TensorType, List[TensorType]):
-        self._features = input_dict["obs"].float().permute(0, 3, 1, 2)
+
+        self._features = input_dict["obs"].float()
+
+        if self._features.size(-1) == 3:
+            self._features = self._features.permute(0, 3, 1, 2)
+
         conv_out = self._convs(self._features)
         # Store features to save forward pass when getting value_function out.
         if not self._value_branch_separate:

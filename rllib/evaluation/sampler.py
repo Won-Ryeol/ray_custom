@@ -41,10 +41,16 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# PolicyEvalData = namedtuple("PolicyEvalData", [
+#     "env_id", "agent_id", "obs", "info", "rnn_state", "prev_action",
+#     "prev_reward"
+# ])
+
 PolicyEvalData = namedtuple("PolicyEvalData", [
     "env_id", "agent_id", "obs", "info", "rnn_state", "prev_action",
     "prev_reward"
 ])
+
 
 # A batch of RNN states with dimensions [state_index, batch, state_object].
 StateBatch = List[List[Any]]
@@ -612,6 +618,9 @@ def _env_runner(
         # Do batched policy eval (accross vectorized envs).
         t2 = time.time()
         # type: Dict[PolicyID, Tuple[TensorStructType, StateBatch, dict]]
+        # TODO (chmin): tentaive
+        # obs = worker.env.render(mode='rgb_array')
+        # to_eval[list(to_eval.keys())[0]][0].info = obs
         if _use_trajectory_view_api:
             eval_results = _do_policy_eval_w_trajectory_view_api(
                 to_eval=to_eval,
@@ -1072,14 +1081,19 @@ def _process_observations_w_trajectory_view_api(
                     agent_done, values_dict)
 
             if not agent_done:
+                vis_info = worker.env.render(mode='rgb_array')
                 item = PolicyEvalData(
-                    env_id, agent_id, filtered_obs, agent_infos, None
+                    # env_id, agent_id, filtered_obs, agent_infos, None
+                    env_id, agent_id, filtered_obs, vis_info, None #* add visual observation as info.
                     if last_observation is None else
                     episode.rnn_state_for(agent_id), None
                     if last_observation is None else
                     episode.last_action_for(agent_id),
                     rewards[env_id][agent_id] or 0.0)
                 to_eval[policy_id].append(item)
+                # TODO (chmin): add visual observation
+                # obs = worker.env.render(mode='rgb_array')
+                # to_eval[policy_id].append(obs)
 
         # Invoke the step callback after the step is logged to the episode
         callbacks.on_episode_step(
@@ -1132,6 +1146,9 @@ def _process_observations_w_trajectory_view_api(
                 resetted_obs: Dict[AgentID, EnvObsType] = base_env.try_reset(
                     env_id)
             # Reset not supported, drop this env from the ready list.
+            
+            # resetted_obs['agent0'] = resetted_obs['agent0'][None]
+
             if resetted_obs is None:
                 if horizon != float("inf"):
                     raise ValueError(
@@ -1151,8 +1168,11 @@ def _process_observations_w_trajectory_view_api(
                 # type: AgentID, EnvObsType
                 for agent_id, raw_obs in resetted_obs.items():
                     policy_id: PolicyID = new_episode.policy_for(agent_id)
+                    # TODO (chmin): check if unsqueezing raises an error
                     prep_obs: EnvObsType = _get_or_raise(
                         preprocessors, policy_id).transform(raw_obs)
+                    # print("obs_max: {} obs_min: {} obs_shape: {}".format(prep_obs.max(), prep_obs.min(), prep_obs.shape))
+                    prep_obs = prep_obs[None] # 
                     filtered_obs: EnvObsType = _get_or_raise(
                         obs_filters, policy_id)(prep_obs)
                     new_episode._set_last_observation(agent_id, filtered_obs)
@@ -1162,9 +1182,11 @@ def _process_observations_w_trajectory_view_api(
                         new_episode, agent_id, env_id, policy_id,
                         new_episode.length - 1, filtered_obs)
 
+                    vis_info = worker.env.render(mode='rgb_array')
                     item = PolicyEvalData(
                         env_id, agent_id, filtered_obs,
-                        episode.last_info_for(agent_id) or {},
+                        # episode.last_info_for(agent_id) or {},
+                        vis_info,
                         episode.rnn_state_for(agent_id), None, 0.0)
                     to_eval[policy_id].append(item)
 
@@ -1302,8 +1324,12 @@ def _do_policy_eval_w_trajectory_view_api(
     for policy_id, eval_data in to_eval.items():
         policy: Policy = _get_or_raise(policies, policy_id)
         input_dict = _sample_collector.get_inference_input_dict(policy_id)
+        # TODO (chmin): add rendering info here.
+        input_dict['vis'] = eval_data[0].info
+
         eval_results[policy_id] = \
             policy.compute_actions_from_input_dict(
+                # input_dict,
                 input_dict,
                 timestep=policy.global_timestep,
                 episodes=[active_episodes[t.env_id] for t in eval_data])

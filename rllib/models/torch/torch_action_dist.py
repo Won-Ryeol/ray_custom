@@ -15,6 +15,7 @@ from ray.rllib.utils.torch_ops import atanh
 from ray.rllib.utils.typing import TensorType, List, Union, \
     Tuple, ModelConfigDict
 
+
 torch, nn = try_import_torch()
 
 

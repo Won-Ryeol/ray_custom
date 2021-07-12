@@ -6,6 +6,7 @@ from ray.rllib.agents.a3c.a3c_torch_policy import apply_grad_clipping
 from ray.rllib.utils.framework import try_import_torch
 from ray.rllib.models.catalog import ModelCatalog
 from ray.rllib.agents.dreamer.utils import FreezeParameters
+from gatsbi_rl.baselines.slide_to_target_config import CFG
 
 torch, nn = try_import_torch()
 if torch:
@@ -15,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 import cv2
 import numpy as np
+from pathlib import Path
 
 # This is the computation graph for workers (inner adaptation steps)
 def compute_dreamer_loss(obs,
@@ -117,64 +119,67 @@ def compute_dreamer_loss(obs,
     if log_gif is not None:
         return_dict["log_gif"] = log_gif
 
+    # XAI
+    XAI_DIR = f'/home/wrkwak/xai_results/dreamer/{CFG.TASK}/{CFG.EXP_NAME}'
     model.step()
     # GradCAM
-    if len(obs.size()) == 5:
-        if model.global_step % 300 == 0:
-            result_images = None
-            for axis in range(3):
-                # update GradCAM
-                sample_state = torch.unsqueeze(obs[0][0].permute(2,0,1),0)
-                sample_post = [torch.unsqueeze(p[0][0],0) for p in post]
-                sample_action = torch.unsqueeze(action[0][0],0)
-                gcam_action = model.gcam.forward(sample_state, sample_post, sample_action)
+    if CFG.OBS_TYPE == 'vision':
+        if model.global_step % CFG.XAI_INTERVAL == 0:
+            if CFG.GCAM:
+                result_images = None
+                for axis in range(3):
+                    # update GradCAM
+                    sample_state = torch.unsqueeze(obs[0][0].permute(2,0,1),0)
+                    sample_post = [torch.unsqueeze(p[0][0],0) for p in post]
+                    sample_action = torch.unsqueeze(action[0][0],0)
+                    gcam_action = model.gcam.forward(sample_state, sample_post, sample_action)
 
-                # (1) Get state image
-                state = (sample_state[0]*255).permute(1,2,0).detach().cpu().numpy().astype(np.uint8)
-                state = cv2.resize(state, (150, 150), interpolation=cv2.INTER_LINEAR)
+                    # (1) Get state image
+                    state = (sample_state[0]*255).permute(1,2,0).detach().cpu().numpy().astype(np.uint8)
+                    state = cv2.resize(state, (150, 150), interpolation=cv2.INTER_LINEAR)
+                    
+                    # Get Grad-CAM image (3X3)
+                    target_layer = "encoder.model.3"
                 
-                # Get Grad-CAM image (3X3)
-                target_layer = "encoder.model.3"
-            
-                # (2) Get regions for each layer of model
-                model.gcam.backward(axis)
-                regions = model.gcam.generate(target_layer)
-                regions = regions.detach().cpu().numpy()
-                regions = np.squeeze(regions) * 255
-                regions = np.transpose(regions[0])
-                
-                # Resizing the heatmap of region
-                regions = cv2.applyColorMap(regions.astype(np.uint8), cv2.COLORMAP_JET)
-                regions = cv2.resize(regions, (150, 150), interpolation=cv2.INTER_LINEAR)
-                regions = cv2.cvtColor(regions, cv2.COLOR_RGB2BGR)
+                    # (2) Get regions for each layer of model
+                    model.gcam.backward(axis)
+                    regions = model.gcam.generate(target_layer)
+                    regions = regions.detach().cpu().numpy()
+                    regions = np.squeeze(regions) * 255
+                    regions = np.transpose(regions[0])
+                    
+                    # Resizing the heatmap of region
+                    regions = cv2.applyColorMap(regions.astype(np.uint8), cv2.COLORMAP_JET)
+                    regions = cv2.resize(regions, (150, 150), interpolation=cv2.INTER_LINEAR)
+                    regions = cv2.cvtColor(regions, cv2.COLOR_RGB2BGR)
 
-                # (3) Overlay the state & region.
-                overlay = cv2.addWeighted(state, 1.0, regions, 0.5, 0)
-                
-                # Concate (1)~(3)
-                result = np.hstack([state, regions, overlay])
-                result_images = (
-                    result
-                    if result_images is None
-                    else np.vstack([result_images, result])
+                    # (3) Overlay the state & region.
+                    overlay = cv2.addWeighted(state, 1.0, regions, 0.5, 0)
+                    
+                    # Concate (1)~(3)
+                    result = np.hstack([state, regions, overlay])
+                    result_images = (
+                        result
+                        if result_images is None
+                        else np.vstack([result_images, result])
+                    )
+                result_images = cv2.copyMakeBorder(result_images,30,0,0,0,cv2.BORDER_CONSTANT,value=[255,255,255])
+                # Show action on result image
+                cv2.putText(
+                    img=result_images,
+                    text="action : {:0.3f},{:0.3f},{:0.3f}".format(gcam_action[0],gcam_action[1],gcam_action[2]),
+                    org=(20, 20),
+                    fontFace=cv2.FONT_HERSHEY_PLAIN,
+                    fontScale=1,
+                    color=(0, 0, 255),
+                    thickness=2,
                 )
-            result_images = cv2.copyMakeBorder(result_images,30,0,0,0,cv2.BORDER_CONSTANT,value=[255,255,255])
-            # Show action on result image
-            cv2.putText(
-                img=result_images,
-                text="action : {:0.3f},{:0.3f},{:0.3f}".format(gcam_action[0],gcam_action[1],gcam_action[2]),
-                org=(20, 20),
-                fontFace=cv2.FONT_HERSHEY_PLAIN,
-                fontScale=1,
-                color=(0, 0, 255),
-                thickness=2,
-            )
-            cv2.imwrite(f'/home/wrkwak/grad_cam_test/dreamer/2/test_step{model.global_step}.png', cv2.cvtColor(result_images, cv2.COLOR_RGB2BGR))
+                xai_dir = XAI_DIR + '/gcam'
+                Path(xai_dir).mkdir(parents=True, exist_ok=True)
+                cv2.imwrite(xai_dir + f'/{model.global_step}_gcam.png', cv2.cvtColor(result_images, cv2.COLOR_RGB2BGR))
 
-    elif len(obs.size()) == 3:
-        pass
-    else:
-        raise ValueError
+    else :
+        raise ValueError("OBS_TYPE should be vision.")
 
     return return_dict
 

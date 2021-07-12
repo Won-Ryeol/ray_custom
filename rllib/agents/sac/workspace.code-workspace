@@ -1,0 +1,11 @@
+{
+	"folders": [
+		{
+			"path": "../../../../rlbench_custom"
+		},
+		{
+			"path": "../../.."
+		}
+	],
+	"settings": {}
+}

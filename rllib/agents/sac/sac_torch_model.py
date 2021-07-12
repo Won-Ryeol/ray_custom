@@ -1,7 +1,7 @@
 import gym
 from gym.spaces import Box, Discrete
 import numpy as np
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 
 from ray.rllib.models.torch.misc import SlimFC
 from ray.rllib.models.torch.torch_modelv2 import TorchModelV2
@@ -9,8 +9,25 @@ from ray.rllib.utils.framework import get_activation_fn, try_import_torch
 from ray.rllib.utils.spaces.simplex import Simplex
 from ray.rllib.utils.typing import ModelConfigDict, TensorType
 
+# import gym
+# from gym.spaces import Box, Discrete
+# import numpy as np
+# from typing import Dict, List, Optional, Tuple
+
+# from ray.rllib.models.catalog import ModelCatalog
+# from ray.rllib.models.torch.torch_modelv2 import TorchModelV2
+# from ray.rllib.utils import force_list
+# from ray.rllib.utils.annotations import override
+# from ray.rllib.utils.framework import try_import_torch
+# from ray.rllib.utils.spaces.simplex import Simplex
+# from ray.rllib.utils.typing import ModelConfigDict, TensorType
+
+from gatsbi_rl.baselines.slide_to_target_config import CFG
+
 import sys
-sys.path.append("/home/wrkwak/gatsbi_rl")
+
+from torch.functional import Tensor
+# sys.path.append("/home/wrkwak/gatsbi_rl")
 from gradcam.grad_cam import GradCAM
 
 torch, nn = try_import_torch()
@@ -88,6 +105,9 @@ class SACTorchModel(TorchModelV2, nn.Module):
             action_ins = self.action_dim
             q_outs = 1
 
+        # TODO (chmin): both the action model and q_net should receive 
+        # TODO: 'states_in' as input.
+
         # Build the policy network.
         self.action_model = nn.Sequential()
         ins = self.num_outputs
@@ -110,6 +130,9 @@ class SACTorchModel(TorchModelV2, nn.Module):
                 action_outs,
                 initializer=torch.nn.init.xavier_uniform_,
                 activation_fn=None))
+
+        # seperate head from action_model.
+
 
         # Build the Q-net(s), including target Q-net(s).
         def build_q_net(name_):
@@ -161,12 +184,19 @@ class SACTorchModel(TorchModelV2, nn.Module):
         self.target_entropy = torch.tensor(
             data=[target_entropy], dtype=torch.float32, requires_grad=False)
 
+        # TODO (Chmin): newly added features below.
+
+        self.act_disc_model = nn.Sequential(
+            nn.Linear(self.obs_ins, 256),
+            nn.ReLU(),
+            nn.Linear(256, 256),
+            nn.ReLU(),
+            nn.Linear(256, 27) # this should be bucketized.
+        )
         self.global_step = 0
-    
         self.gcam = GradCAM(self)
-        # self.task_name = 
-
-
+        self.episode_obs = torch.zeros((1, CFG.HORIZON, 3, 64, 64))
+    
     def step(self):
         self.global_step += 1
 

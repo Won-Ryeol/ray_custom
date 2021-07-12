@@ -222,7 +222,8 @@ class TorchPolicy(Policy):
                     self.action_distribution_fn(
                         self,
                         self.model,
-                        input_dict[SampleBatch.CUR_OBS],
+            # input_dict[SampleBatch.CUR_OBS], # TODO (chmin): parse both obs and visual info.
+                        input_dict,
                         explore=explore,
                         timestep=timestep,
                         is_training=False)

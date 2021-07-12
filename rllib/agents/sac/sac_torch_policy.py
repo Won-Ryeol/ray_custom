@@ -27,16 +27,25 @@ from ray.rllib.utils.torch_ops import huber_loss
 from ray.rllib.utils.typing import LocalOptimizer, TensorType, \
     TrainerConfigDict
 
+
+# explainable ai.
 from gatsbi_rl.baselines.slide_to_target_config import CFG
 from gatsbi_rl.gradcam.saliency_map import *
 from gatsbi_rl.rllib_agent.utils import FreezeParameters
+from gatsbi_rl.gradcam.lrp import convert_vision
+from gatsbi_rl.gradcam.lrp.visualize import *
+from gatsbi_rl.gradcam.lrp.converter import SlimFlatten
+
+# visualize as gif.
+from gatsbi_rl.gatsbi.visualize import * # import all function
 
 import cv2
 import numpy as np
 from pathlib import Path
 
-import captum
+import matplotlib.pyplot as plt
 
+from torch.distributions import Categorical
 
 torch, nn = try_import_torch()
 F = nn.functional
@@ -139,6 +148,27 @@ def action_distribution_fn(
             The dist inputs, dist class, and a list of internal state outputs
             (in the RNN case).
     """
+    if "vis" in obs_batch:
+        vis_step = obs_batch['vis'].permute(2, 0, 1)
+        obs_batch = obs_batch['obs']
+    if len(obs_batch.size()) != 4 and CFG.OBS_TYPE == 'vision': # exception for full state
+        #* weird handling, but okay. Signal for the start of each episode.
+        obs_batch = obs_batch.squeeze(0) # if episode reset; [1, 3, 64, 64]
+
+        if hasattr(model, 'episodic_step'):
+            setattr(model, 'vis_episode', model.episode_obs[:, :model.episodic_step]) # slice upto episode length.
+            # setattr(model, 'is_vis', True)
+        setattr(model, 'episodic_step', 0)
+    # TODO(chmin): reset handling for fully observable agent
+    if len(obs_batch.size()) == 3 and CFG.OBS_TYPE == 'state':
+        obs_batch = obs_batch.squeeze(0) # if episode reset; [1, 3, 64, 64]
+        if hasattr(model, 'episodic_step'):
+            setattr(model, 'vis_episode', model.episode_obs[:, :model.episodic_step])
+            # TODO (chmin): add visualization2
+        setattr(model, 'episodic_step', 0)
+
+
+
     # Get base-model output (w/o the SAC specific parts of the network).
     model_out, _ = model({
         "obs": obs_batch,
@@ -149,6 +179,19 @@ def action_distribution_fn(
     distribution_inputs = model.get_policy_output(model_out)
     # Get a distribution class to be used with the just calculated dist-inputs.
     action_dist_class = _get_dist_class(policy.config, policy.action_space)
+    
+    # model.episode_obs = 
+
+    # TODO (chmin): optimize conditioning.
+    if hasattr(model, 'episodic_step') and CFG.OBS_TYPE == 'vision':
+        model.episode_obs[:, model.episodic_step] = obs_batch # [1, 3, 64, 64]
+        model.episodic_step += 1        
+    if hasattr(model, 'episodic_step') and CFG.OBS_TYPE == 'state':
+        model.episode_obs[:, model.episodic_step] = vis_step[None] # [1, 3, 64, 64]
+        model.episodic_step += 1        
+
+
+
 
     return distribution_inputs, action_dist_class, []
 
@@ -302,6 +345,7 @@ def actor_critic_loss(
 
     # mlp_lastlayer_weight = model.action_model.action_out._model._modules['0'].weight.data
 
+    action_dist_norm = torch.norm(action_dist_t.dist.loc, p=2)
     if model.discrete:
         weighted_log_alpha_loss = policy_t.detach() * (
             -model.log_alpha * (log_pis_t + model.target_entropy).detach())
@@ -315,7 +359,7 @@ def actor_critic_loss(
                     # (compare with q_t_det_policy for continuous case).
                     policy_t,
                     alpha.detach() * log_pis_t - q_t.detach()),
-                dim=-1)) + torch.norm(action_dist_t.dist.loc, p=2)
+                dim=-1)) + CFG.ACT_REG_WEIGHT * action_dist_norm
     else:
         alpha_loss = -torch.mean(model.log_alpha *
                                  (log_pis_t + model.target_entropy).detach())
@@ -323,23 +367,50 @@ def actor_critic_loss(
         # on the policy vars (policy sample pushed through Q-net).
         # However, we must make sure `actor_loss` is not used to update
         # the Q-net(s)' variables.
-        actor_loss = torch.mean(alpha.detach() * log_pis_t - q_t_det_policy) + torch.norm(action_dist_t.dist.loc, p=2)
+        
+        actor_loss = torch.mean(alpha.detach() * log_pis_t - q_t_det_policy) + CFG.ACT_REG_WEIGHT * action_dist_norm
     
+        #* compute auxiliary loss
+        # raw_out = model.get_policy_output(model_out_t)
 
-    XAI_DIR = f'/home/wrkwak/xai_results/sac/{CFG.TASK}/{CFG.EXP_NAME}'
+        raw_action = action_dist_t.deterministic_sample() # [B, A]
+        raw_cart_x = CFG.ACTION_SCALE * raw_action[:, 0]
+        raw_cart_y = CFG.ACTION_SCALE * raw_action[:, 1]
+        raw_cart_z = CFG.Z_SCALE * raw_action[:, 2]
+
+        boundary = torch.tensor([-0.0004, 0.0004], device=obs_raw.device)
+        x_idx = torch.bucketize(raw_cart_x, boundary) # [B, ]
+        y_idx = torch.bucketize(raw_cart_y, boundary) # [B, ]
+        z_idx = torch.bucketize(raw_cart_z, boundary) # [B, ]
+
+        idx = (3**2 * x_idx + 3 * y_idx + z_idx).long()
+
+        act_logit = model.act_disc_model(model_out_t)
+        # act_aux_loss = Categorical(logits=act_logit) # [B, 27]
+        act_disc_loss = nn.CrossEntropyLoss()(act_logit, idx.long())
+        actor_loss = actor_loss + act_disc_loss
+
+        _, act_pred = torch.max(act_logit, dim=1)
+
+        x_idx_pred = act_pred // (3 ** 2) # [B, ]
+        y_idx_pred = (act_pred - (3 ** 2) * x_idx_pred) // 3
+        z_idx_pred = act_pred - (3 ** 2) * x_idx_pred - 3 * y_idx_pred
+
+    XAI_DIR = os.path.expanduser(f"~/xai_results/sac/{CFG.TASK}/{CFG.EXP_NAME}/")
     # XAI
-    if len(obs_raw.size()) == 4:
+    if CFG.OBS_TYPE == 'vision':
         model.step()
-        if model.global_step % 200 == 0:
-
+        if model.global_step % CFG.XAI_INTERVAL == 0:
+            obs = obs_raw
             if CFG.GCAM:
                 # Grad-CAM
                 result_images = None
                 for axis in range(3):
-                    obs = obs_raw
+                    
                     # update GradCAM
-                    state = (obs * 255.0).float().permute(0,3,1,2)
+                    state = (obs * 255.0).float() #.permute(0,3,1,2)
                     action = model.gcam.forward(torch.unsqueeze(state[0], 0))
+                    boundary = torch.tensor([-0.3, 0.0, 0.3], device=obs.device)
 
                     # (1) Get state image
                     state = state[0].permute(1,2,0).detach().cpu().numpy().astype(np.uint8)
@@ -389,59 +460,116 @@ def actor_critic_loss(
             if CFG.SMAP:
                 # Saliency map.
                 xai_dir = XAI_DIR + '/smap'
-                Path(xai_dir).mkdir(parents=True, exist_ok=True)
-                # saliency_map_dir = make_saliency_dir(xai_dir)
+                Path(xai_dir).mkdir(parents=True, exist_ok=True) # saliency_map_dir = make_saliency_dir(xai_dir)
                 
-                obs = obs_raw
                 # update GradCAM
-                state = (obs * 255.0).float().permute(0,3,1,2)
-
-                action = model.gcam.forward(torch.unsqueeze(state[0], 0))
+                state = (obs * 255.0).float() #.permute(0,3,1,2)
 
                 with FreezeParameters(model.parameters()):
-                    saliency_map = save_saliency_maps(
-                    state=state,
-                    action=action, 
-                    model=model,
-                    device = obs.device,
-                    saliency_map_dir=xai_dir
+                    saliency_map, scores = compute_saliency_maps(
+                        state = state[0].unsqueeze(0),
+                        model = model,
+                        device = policy.device
+                        )
+                        
+                state = state[0].permute(1,2,0).detach().cpu().numpy().astype(np.uint8) # .astype(np.uint8)
+                # state = state[0].detach().cpu().numpy() # .astype(np.uint8)
+                state = cv2.resize(state, (150, 150), interpolation=cv2.INTER_LINEAR)
+                state = cv2.cvtColor(state, cv2.COLOR_RGB2BGR)
+                result_images = None
+                for smap in saliency_map:
+                    smap = smap.detach().cpu().numpy()
+
+                    # min_val = smap.min()
+                    # max_val = smap.max()
+                    # smap = smap - min_val
+                    # smap = smap / (max_val - min_val) * 255
+                    smap = heatmap(smap.transpose(1, 2, 0)) * 255.0
+                    # smap = cv2.applyColorMap(smap[0].astype(np.uint8), cv2.COLORMAP_HOT)
+                    smap = cv2.resize(smap, (150, 150), interpolation=cv2.INTER_LINEAR)
+                    overlay = cv2.addWeighted(state, 1.0, smap, 0.5, 0)
+                    result = np.hstack([state, smap, overlay])
+                    result_images = (
+                        result
+                        if result_images is None
+                        else np.vstack([result_images, result])
                     )
+                # Show action on result image
+                result_images = cv2.copyMakeBorder(result_images,30,0,0,0,cv2.BORDER_CONSTANT,value=[255,255,255])
+                scores = scores.detach().cpu().numpy()
+                cv2.putText(
+                    img=result_images,
+                    text="action : {:0.3f},{:0.3f},{:0.3f}".format(scores[0],scores[1],scores[2]),
+                    org=(20, 20),
+                    fontFace=cv2.FONT_HERSHEY_PLAIN,
+                    fontScale=1,
+                    color=(255, 0, 0),
+                    thickness=2,
+                )
+                cv2.imwrite(xai_dir + f'/test_step{model.global_step}.png', result_images)
+
+            # TODO (Chmin): we should only parse the actor part of the model.
+            if CFG.LRP:
+                xai_dir = XAI_DIR + '/lrp'
+                Path(xai_dir).mkdir(parents=True, exist_ok=True) # saliency_map_dir = make_saliency_dir(xai_dir)
+
+                model.eval()
+                # TODO (chmin): check if tanh could be parsed.
+                act_infer_list = [model._convs, model._logits, SlimFlatten(), model.action_model]
+                lrp_model = convert_vision(act_infer_list).to(obs.device)
+                # _ = lrp_model(obs.permute(0, 3, 1, 2)) # [B, 2 * A]
+                _ = lrp_model(obs) # [B, 2 * A]
                 
-                # state = np.transpose(state[-1])
-                # state = cv2.cvtColor(state, cv2.COLOR_GRAY2BGR)
-                # state = cv2.resize(state, (150, 150), interpolation=cv2.INTER_LINEAR)
+                input = obs.contiguous().detach().cpu().numpy()[0][None][0].transpose(1, 2, 0)
+                #plot for each explanation
+                result_images = None
+                action = np.zeros(3)
+                for axis in range(3):
+                    result = cv2.resize(input * 255, (150, 150), interpolation=cv2.INTER_LINEAR)
+                    for _, (rule, pattern) in enumerate(explanations):
+                        # attr, action[axis] = compute_and_plot_explanation(lrp_model, obs=obs[0][None].permute(0, 3, 1, 2), rule=rule, axis = axis, patterns=pattern)
+                        attr, action[axis] = compute_and_plot_explanation(lrp_model, obs=obs[0][None], rule=rule, axis = axis, patterns=pattern)
+                        attr = attr.permute(0, 2, 3, 1)
+                        attr = heatmap(attr) * 255
+                        attr = cv2.resize(attr[0], (150, 150), interpolation=cv2.INTER_LINEAR)
+                        if result_images is None:
+                            if result.shape[0] == 150:
+                                result = cv2.copyMakeBorder(result,30,0,0,0,cv2.BORDER_CONSTANT,value=[255,255,255])                
+                            attr = cv2.copyMakeBorder(attr,30,0,0,0,cv2.BORDER_CONSTANT,value=[255,255,255])                
+                            cv2.putText(
+                                img=attr,
+                                text=rule,
+                                org=(20, 20),
+                                fontFace=cv2.FONT_HERSHEY_PLAIN,
+                                fontScale=1,
+                                color=(255, 0, 0),
+                                thickness=1,
+                            )
+                        result = np.hstack([result, attr])
+                    result_images = (
+                        result
+                        if result_images is None
+                        else np.vstack([result_images, result])
+                    )
+                # Show action on result image
+                result_images = cv2.copyMakeBorder(result_images,30,0,0,0,cv2.BORDER_CONSTANT,value=[255,255,255])
+                
+                cv2.putText(
+                    img=result_images,
+                    text="action : {:0.3f},{:0.3f},{:0.3f}".format(action[0],action[1],action[2]),
+                    org=(20, 20),
+                    fontFace=cv2.FONT_HERSHEY_PLAIN,
+                    fontScale=1,
+                    color=(0, 0, 255),
+                    thickness=2,
+                )
+                cv2.imwrite(xai_dir + f'/test_step{model.global_step}.png', cv2.cvtColor(result_images, cv2.COLOR_RGB2BGR))
+                model.train()
 
-                # # Get Grad-CAM image
-                # result_images = None
-                # saliency_map = np.asarray(saliency_map)
-                # saliency_map = cv2.resize(
-                #     saliency_map, (150, 150), interpolation=cv2.INTER_LINEAR
-                # )
-                # saliency_map = cv2.cvtColor(saliency_map, cv2.COLOR_RGBA2BGR)
-                # overlay = cv2.addWeighted(state, 1.0, saliency_map, 0.5, 0)
-                # result = np.hstack([state, saliency_map, overlay])
-                # result_images = (
-                #     result
-                #     if result_images is None
-                #     else np.vstack([result_images, result])
-                # )
-                # # Show action on result image
-                # cv2.putText(
-                #     img=result_images,
-                #     text=f"action: {action}",
-                #     org=(50, 50),
-                #     fontFace=cv2.FONT_HERSHEY_PLAIN,
-                #     fontScale=1,
-                #     color=(0, 0, 255),
-                #     thickness=2,
-                # )
-                # cv2.imwrite(xai_dir + f'/test_step{model.global_step}.png', result_images)
-
-    elif len(obs_raw.size()) == 2:
+    elif CFG.OBS_TYPE == 'state':
         pass
     else:
         raise ValueError
-
     
     # Save for stats function.
     policy.q_t = q_t
@@ -454,6 +582,16 @@ def actor_critic_loss(
     policy.log_alpha_value = model.log_alpha
     policy.alpha_value = alpha
     policy.target_entropy = model.target_entropy
+    policy.action_dist_norm = action_dist_norm
+    policy.acttion_discretize_loss = act_disc_loss
+
+
+    # visualization
+    if (policy.global_timestep % 1000 == 0 and hasattr(model, 'episodic_step')
+        and hasattr(model, 'vis_episode')):
+        policy.vis_episode = model.vis_episode
+        # TODO (chmin): process as video (gif) here.
+
 
 
     # Return all loss terms corresponding to our optimizers.
@@ -471,6 +609,12 @@ def stats(policy: Policy, train_batch: SampleBatch) -> Dict[str, TensorType]:
     Returns:
         Dict[str, TensorType]: The stats dict.
     """
+    if policy.global_timestep % CFG.VIS_EVERY == 0 and hasattr(policy, 'vis_episode'):
+        episode_gif = policy.vis_episode #.permute(0, 1, 4, 2, 3)
+    else:
+        episode_gif = None
+
+
     return {
         "td_error": policy.td_error,
         "mean_td_error": torch.mean(policy.td_error),
@@ -484,6 +628,8 @@ def stats(policy: Policy, train_batch: SampleBatch) -> Dict[str, TensorType]:
         "mean_q": torch.mean(policy.q_t),
         "max_q": torch.max(policy.q_t),
         "min_q": torch.min(policy.q_t),
+        "action_dist_norm" : policy.action_dist_norm,
+        "episode_gif": episode_gif
     }
 
 

@@ -12,6 +12,7 @@ def get_filter_config(shape):
             inside a model config dict.
     """
     shape = list(shape)
+    shape.reverse()
     filters_84x84 = [
         [16, [8, 8], 4],
         [32, [4, 4], 2],
