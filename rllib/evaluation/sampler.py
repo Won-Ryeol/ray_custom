@@ -39,6 +39,9 @@ if TYPE_CHECKING:
     from ray.rllib.evaluation.observation_function import ObservationFunction
     from ray.rllib.evaluation.rollout_worker import RolloutWorker
 
+from gatsbi_rl.gatsbi.arch import ARCH
+
+
 logger = logging.getLogger(__name__)
 
 # PolicyEvalData = namedtuple("PolicyEvalData", [
@@ -1172,7 +1175,9 @@ def _process_observations_w_trajectory_view_api(
                     prep_obs: EnvObsType = _get_or_raise(
                         preprocessors, policy_id).transform(raw_obs)
                     # print("obs_max: {} obs_min: {} obs_shape: {}".format(prep_obs.max(), prep_obs.min(), prep_obs.shape))
-                    prep_obs = prep_obs[None] # 
+                    
+                    if not ARCH.GATSBI:
+                        prep_obs = prep_obs[None] # 
                     filtered_obs: EnvObsType = _get_or_raise(
                         obs_filters, policy_id)(prep_obs)
                     new_episode._set_last_observation(agent_id, filtered_obs)

@@ -189,7 +189,7 @@ def action_distribution_fn(
         model.episode_obs[:, model.episodic_step] = obs_batch # [1, 3, 64, 64]
         model.episodic_step += 1        
     if hasattr(model, 'episodic_step') and CFG.OBS_TYPE == 'state':
-        model.episode_obs[:, model.episodic_step] = vis_step[None] # [1, 3, 64, 64]
+        model.episode_obs[:, model.episodic_step] = vis_step # [1, 3, 64, 64]
         model.episodic_step += 1        
 
 
