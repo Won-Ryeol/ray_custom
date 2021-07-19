@@ -585,7 +585,7 @@ def actor_critic_loss(
     policy.alpha_value = alpha
     policy.target_entropy = model.target_entropy
     policy.action_dist_norm = action_dist_norm
-    policy.acttion_discretize_loss = act_disc_loss
+    # policy.acttion_discretize_loss = act_disc_loss
 
 
     # visualization
