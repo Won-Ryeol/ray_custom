@@ -372,31 +372,31 @@ def actor_critic_loss(
         
         actor_loss = torch.mean(alpha.detach() * log_pis_t - q_t_det_policy) + CFG.ACT_REG_WEIGHT * action_dist_norm
     
-        #* compute auxiliary loss
-        # raw_out = model.get_policy_output(model_out_t)
+        # #* compute auxiliary loss
+        # # raw_out = model.get_policy_output(model_out_t)
 
-        raw_action = action_dist_t.deterministic_sample() # [B, A]
-        raw_cart_x = CFG.ACTION_SCALE * raw_action[:, 0]
-        raw_cart_y = CFG.ACTION_SCALE * raw_action[:, 1]
-        raw_cart_z = CFG.Z_SCALE * raw_action[:, 2]
+        # raw_action = action_dist_t.deterministic_sample() # [B, A]
+        # raw_cart_x = CFG.ACTION_SCALE * raw_action[:, 0]
+        # raw_cart_y = CFG.ACTION_SCALE * raw_action[:, 1]
+        # raw_cart_z = CFG.Z_SCALE * raw_action[:, 2]
 
-        boundary = torch.tensor([-0.0004, 0.0004], device=obs_raw.device)
-        x_idx = torch.bucketize(raw_cart_x, boundary) # [B, ]
-        y_idx = torch.bucketize(raw_cart_y, boundary) # [B, ]
-        z_idx = torch.bucketize(raw_cart_z, boundary) # [B, ]
+        # boundary = torch.tensor([-0.0004, 0.0004], device=obs_raw.device)
+        # x_idx = torch.bucketize(raw_cart_x, boundary) # [B, ]
+        # y_idx = torch.bucketize(raw_cart_y, boundary) # [B, ]
+        # z_idx = torch.bucketize(raw_cart_z, boundary) # [B, ]
 
-        idx = (3**2 * x_idx + 3 * y_idx + z_idx).long()
+        # idx = (3**2 * x_idx + 3 * y_idx + z_idx).long()
 
-        act_logit = model.act_disc_model(model_out_t)
-        # act_aux_loss = Categorical(logits=act_logit) # [B, 27]
-        act_disc_loss = nn.CrossEntropyLoss()(act_logit, idx.long())
-        actor_loss = actor_loss + act_disc_loss
+        # act_logit = model.act_disc_model(model_out_t)
+        # # act_aux_loss = Categorical(logits=act_logit) # [B, 27]
+        # act_disc_loss = nn.CrossEntropyLoss()(act_logit, idx.long())
+        actor_loss = actor_loss  # + act_disc_loss
 
-        _, act_pred = torch.max(act_logit, dim=1)
+        # _, act_pred = torch.max(act_logit, dim=1)
 
-        x_idx_pred = act_pred // (3 ** 2) # [B, ]
-        y_idx_pred = (act_pred - (3 ** 2) * x_idx_pred) // 3
-        z_idx_pred = act_pred - (3 ** 2) * x_idx_pred - 3 * y_idx_pred
+        # x_idx_pred = act_pred // (3 ** 2) # [B, ]
+        # y_idx_pred = (act_pred - (3 ** 2) * x_idx_pred) // 3
+        # z_idx_pred = act_pred - (3 ** 2) * x_idx_pred - 3 * y_idx_pred
 
     XAI_DIR = os.path.expanduser(f"~/xai_results/sac/{CFG.TASK}/{CFG.EXP_NAME}/")
     # XAI
