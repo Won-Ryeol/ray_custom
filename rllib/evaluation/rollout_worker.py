@@ -995,7 +995,9 @@ class RolloutWorker(ParallelIteratorWorker):
                     p[0].split('.')[0] == 'keypoint_module' or
                     p[0].split('.')[0] == '_optimizer_variables'
                     ), state.items()))
-
+                prev_state = self.policy_map[pid].get_state()
+                prev_state.update(state)
+                state = prev_state
             # TODO (chmin): filter additional agents.
             
             # checkpoint = OrderedDict({k[14:]: v for k, v in checkpoint.items()})  # substract 'kypt_detector.'
