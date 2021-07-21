@@ -45,6 +45,10 @@ from ray.util.debug import log_once, disable_log_once_globally, \
     enable_periodic_logging
 from ray.util.iter import ParallelIteratorWorker
 
+from collections import OrderedDict
+from gatsbi_rl.gatsbi.arch import ARCH
+from gatsbi_rl.baselines.slide_to_target_config import CFG
+
 if TYPE_CHECKING:
     from ray.rllib.evaluation.observation_function import ObservationFunction
 
@@ -983,6 +987,20 @@ class RolloutWorker(ParallelIteratorWorker):
         objs = pickle.loads(objs)
         self.sync_filters(objs["filters"])
         for pid, state in objs["state"].items():
+            # TODO (chmin): add parameter filtering here.
+            # checkpoint = OrderedDict(filter(lambda p: p[0].split('.')[0] == 'kypt_detector', checkpoint.items()))
+            if ARCH.FILTER_GATSBI_AGENT:
+                state = OrderedDict(filter(lambda p: (p[0].split('.')[0] == 'obj_module' or 
+                    p[0].split('.')[0] == 'mixture_module' or 
+                    p[0].split('.')[0] == 'keypoint_module' or
+                    p[0].split('.')[0] == '_optimizer_variables'
+                    ), state.items()))
+
+            # TODO (chmin): filter additional agents.
+            
+            # checkpoint = OrderedDict({k[14:]: v for k, v in checkpoint.items()})  # substract 'kypt_detector.'
+            # network.kypt_detector.load_state_dict(checkpoint)
+
             self.policy_map[pid].set_state(state)
 
     @DeveloperAPI
