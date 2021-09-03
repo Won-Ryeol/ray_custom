@@ -992,12 +992,8 @@ class RolloutWorker(ParallelIteratorWorker):
             if ARCH.FILTER_GATSBI_AGENT:
                 state = OrderedDict(filter(lambda p: (p[0].split('.')[0] == 'obj_module' or 
                     p[0].split('.')[0] == 'mixture_module' or 
-<<<<<<< HEAD
                     p[0].split('.')[0] == 'keypoint_module' or
                     p[0].split('.')[0] == 'agent_depth' #or
-=======
-                    p[0].split('.')[0] == 'keypoint_module' #or
->>>>>>> 2c3f3a9df03370206a929ef1bfd50f8bd668236e
                     # p[0].split('.')[0] == '_optimizer_variables'
                     ), state.items()))
                 prev_state = self.policy_map[pid].get_state()
