@@ -22,7 +22,8 @@ from ray.rllib.utils.typing import ModelConfigDict, TensorType
 # from ray.rllib.utils.spaces.simplex import Simplex
 # from ray.rllib.utils.typing import ModelConfigDict, TensorType
 
-from gatsbi_rl.baselines.slide_to_target_config import CFG
+# from gatsbi_rl.baselines.slide_to_target_config import CFG
+from gatsbi_rl.baselines.clear_objects_config import CFG
 
 import sys
 
