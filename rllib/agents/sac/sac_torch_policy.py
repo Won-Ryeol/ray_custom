@@ -151,7 +151,7 @@ def action_distribution_fn(
     if "vis" in obs_batch:
         vis_step = obs_batch['vis'].permute(2, 0, 1)
         obs_batch = obs_batch['obs']
-    if len(obs_batch.size()) != 4: # exception for full state
+    if len(obs_batch.size()) != 4 and len(obs_batch.size()) >= 3: # exception for full state
         #* weird handling, but okay. Signal for the start of each episode.
         obs_batch = obs_batch.squeeze(0) # if episode reset; [1, 3, 64, 64]
 
