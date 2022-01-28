@@ -29,7 +29,7 @@ from ray.rllib.utils.typing import LocalOptimizer, TensorType, \
 
 
 # explainable ai.
-from gatsbi_rl.baselines.slide_to_target_config import CFG
+from gatsbi_rl.baselines.clear_objects_config import CFG
 from gatsbi_rl.gradcam.saliency_map import *
 from gatsbi_rl.rllib_agent.utils import FreezeParameters
 from gatsbi_rl.gradcam.lrp import convert_vision
@@ -151,7 +151,7 @@ def action_distribution_fn(
     if "vis" in obs_batch:
         vis_step = obs_batch['vis'].permute(2, 0, 1)
         obs_batch = obs_batch['obs']
-    if len(obs_batch.size()) != 4 and CFG.OBS_TYPE == 'vision': # exception for full state
+    if len(obs_batch.size()) != 4 and len(obs_batch.size()) >= 3: # exception for full state
         #* weird handling, but okay. Signal for the start of each episode.
         obs_batch = obs_batch.squeeze(0) # if episode reset; [1, 3, 64, 64]
 
