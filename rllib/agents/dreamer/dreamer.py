@@ -123,6 +123,7 @@ class EpisodicBuffer(object):
             episode: SampleBatch representing an episode
         """
         obs = episode["obs"]
+        obs = [o.squeeze(0) if len(o.shape) == 4 else o for o in episode["obs"]]
         new_obs = episode["new_obs"]
         action = episode["actions"]
         reward = episode["rewards"]
@@ -187,7 +188,7 @@ class DreamerIteration:
 
         # Dreamer Training Loop
         for n in range(self.dreamer_train_iters):
-            print(f"Dreamer Trainig Loop {n}")
+            # print(f"Dreamer Trainig Loop {n}")
             batch = self.episode_buffer.sample(self.batch_size)
             if n == self.dreamer_train_iters - 1:
                 batch["log_gif"] = True

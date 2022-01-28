@@ -501,8 +501,14 @@ class DreamerModel(TorchModelV2, nn.Module):
         post = self.state[:4]
         action = self.state[4]
 
-        # embed = self.encoder(obs)
-        embed = self.encoder(obs.permute(0,3,1,2))
+        if len(obs.size()) == 5:
+            obs = obs.squeeze(0)
+        if len(obs.size()) == 3:
+            obs = obs[None]
+
+        embed = self.encoder(obs)
+
+        # embed = self.encoder(obs.permute(0,3,1,2))
         post, _ = self.dynamics.obs_step(post, action, embed)
         feat = self.dynamics.get_feature(post)
 
@@ -515,7 +521,7 @@ class DreamerModel(TorchModelV2, nn.Module):
         self.state = post + [action]
 
         self.step()
-        print(f"global_step = {self.global_step}")
+        # print(f"global_step = {self.global_step}")
 
         return action, logp, self.state
 
