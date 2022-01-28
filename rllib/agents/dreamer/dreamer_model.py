@@ -252,6 +252,10 @@ class ActionDecoder(nn.Module):
             raise NotImplementedError("Atari not implemented yet!")
         return dist
 
+    def get_preact_tensor(self, x):
+        raw_init_std = np.log(np.exp(self.init_std) - 1)
+        return self.model(x)
+
 
 # Represents TD model in PlaNET
 class RSSM(nn.Module):
@@ -538,18 +542,22 @@ class DreamerModel(TorchModelV2, nn.Module):
         def next_state(state):
             feature = self.dynamics.get_feature(state).detach()
             action = self.actor(feature).rsample()
+            preact = self.actor.get_preact_tensor(feature)
             next_state = self.dynamics.img_step(state, action)
-            return next_state
+            return next_state, preact
 
         last = start
         outputs = [[] for i in range(len(start))]
+        preacts = []
         for _ in range(horizon):
-            last = next_state(last)
+            last, preact = next_state(last)
+            preacts.append(preact)
             [o.append(l) for l, o in zip(last, outputs)]
         outputs = [torch.stack(x, dim=0) for x in outputs]
+        preacts = torch.cat(preacts, dim=0)
 
         imag_feat = self.dynamics.get_feature(outputs)
-        return imag_feat
+        return imag_feat, preacts
 
     def get_initial_state(self) -> List[TensorType]:
         self.state = self.dynamics.get_initial_state(1) + [

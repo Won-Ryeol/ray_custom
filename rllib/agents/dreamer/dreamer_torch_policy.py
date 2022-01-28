@@ -78,7 +78,7 @@ def compute_dreamer_loss(obs,
     with torch.no_grad():
         actor_states = [v.detach() for v in post]
     with FreezeParameters(model_weights):
-        imag_feat = model.imagine_ahead(actor_states, imagine_horizon)
+        imag_feat, preacts = model.imagine_ahead(actor_states, imagine_horizon)
     with FreezeParameters(model_weights + critic_weights):
         reward = model.reward(imag_feat).mean
         value = model.value(imag_feat).mean
@@ -89,7 +89,7 @@ def compute_dreamer_loss(obs,
     discount = torch.cumprod(
         torch.cat([torch.ones(*discount_shape).to(device), pcont[:-2]], dim=0),
         dim=0)
-    actor_loss = -torch.mean(discount * returns)
+    actor_loss = -torch.mean(discount * returns) + preacts.norm()
 
     # Critic Loss
     with torch.no_grad():
@@ -113,6 +113,7 @@ def compute_dreamer_loss(obs,
         "reward_loss": reward_loss,
         "image_loss": image_loss,
         "divergence": div,
+        "preact_norm": preacts.norm().detach(),
         "actor_loss": actor_loss,
         "critic_loss": critic_loss,
         "prior_ent": prior_ent,
