@@ -6,7 +6,7 @@ from ray.rllib.agents.a3c.a3c_torch_policy import apply_grad_clipping
 from ray.rllib.utils.framework import try_import_torch
 from ray.rllib.models.catalog import ModelCatalog
 from ray.rllib.agents.dreamer.utils import FreezeParameters
-from gatsbi_rl.baselines.slide_to_target_config import CFG
+from gatsbi_rl.baselines.clear_objects_config import CFG
 
 torch, nn = try_import_torch()
 if torch:
@@ -57,12 +57,14 @@ def compute_dreamer_loss(obs,
     # TODO (wrkwak): 
 
     # PlaNET Model Loss
-    latent = model.encoder(obs.permute(0,1,4,2,3))
+    # latent = model.encoder(obs.permute(0,1,4,2,3))
+    latent = model.encoder(obs)
     post, prior = model.dynamics.observe(latent, action)
     features = model.dynamics.get_feature(post)
     image_pred = model.decoder(features)
     reward_pred = model.reward(features)
-    image_loss = -torch.mean(image_pred.log_prob(obs.permute(0,1,4,2,3)))
+    # image_loss = -torch.mean(image_pred.log_prob(obs.permute(0,1,4,2,3)))
+    image_loss = -torch.mean(image_pred.log_prob(obs))
     reward_loss = -torch.mean(reward_pred.log_prob(reward))
     prior_dist = model.dynamics.get_dist(prior[0], prior[1])
     post_dist = model.dynamics.get_dist(post[0], post[1])
@@ -76,7 +78,7 @@ def compute_dreamer_loss(obs,
     with torch.no_grad():
         actor_states = [v.detach() for v in post]
     with FreezeParameters(model_weights):
-        imag_feat = model.imagine_ahead(actor_states, imagine_horizon)
+        imag_feat, preacts = model.imagine_ahead(actor_states, imagine_horizon)
     with FreezeParameters(model_weights + critic_weights):
         reward = model.reward(imag_feat).mean
         value = model.value(imag_feat).mean
@@ -87,7 +89,7 @@ def compute_dreamer_loss(obs,
     discount = torch.cumprod(
         torch.cat([torch.ones(*discount_shape).to(device), pcont[:-2]], dim=0),
         dim=0)
-    actor_loss = -torch.mean(discount * returns)
+    actor_loss = -torch.mean(discount * returns) + preacts.norm()
 
     # Critic Loss
     with torch.no_grad():
@@ -103,13 +105,15 @@ def compute_dreamer_loss(obs,
 
     log_gif = None
     if log:
-        log_gif = log_summary(obs.permute(0,1,4,2,3), action, latent, image_pred, model)
+        # log_gif = log_summary(obs.permute(0,1,4,2,3), action, latent, image_pred, model)
+        log_gif = log_summary(obs, action, latent, image_pred, model)
 
     return_dict = {
         "model_loss": model_loss,
         "reward_loss": reward_loss,
         "image_loss": image_loss,
         "divergence": div,
+        "preact_norm": preacts.norm().detach(),
         "actor_loss": actor_loss,
         "critic_loss": critic_loss,
         "prior_ent": prior_ent,
@@ -225,11 +229,11 @@ def dreamer_loss(policy, model, dist_class, train_batch):
 
     action_size = train_batch['actions'].size()[-1]
 
-    for i, ik_error_per_batch_size in enumerate(train_batch['infos']):
-        for j, ik_error in enumerate(ik_error_per_batch_size):
-            if ik_error:
-                for dim in range(action_size):
-                    train_batch['actions'][i,j,dim] = 0.0
+    # for i, ik_error_per_batch_size in enumerate(train_batch['infos']):
+    #     for j, ik_error in enumerate(ik_error_per_batch_size):
+    #         if ik_error:
+    #             for dim in range(action_size):
+    #                 train_batch['actions'][i,j,dim] = 0.0
 
     policy.stats_dict = compute_dreamer_loss(
         train_batch["obs"],
@@ -272,7 +276,6 @@ def action_sampler_fn(policy, model, input_dict, state, explore, timestep):
     to incentivize exploration.
     """
     obs = input_dict["obs"]
-
     # Custom Exploration
     if timestep <= policy.config["prefill_timesteps"]:
         logp = torch.tensor([0.0])
