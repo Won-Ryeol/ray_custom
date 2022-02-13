@@ -80,7 +80,7 @@ class JsonWriter(OutputWriter):
         if not self.cur_file or self.bytes_written >= self.max_file_size:
             if self.cur_file:
                 self.cur_file.close()
-            timestr = datetime.today().strftime("%Y-%m-%d_%H-%M-%S")
+            timestr = datetime.now().strftime("%Y-%m-%d_%H-%M-%S-%f")
             path = os.path.join(
                 self.path, "output-{}_worker-{}_{}_{}.json".format(
                     timestr, self.ioctx.worker_index, self.file_index, os.getpid()))
