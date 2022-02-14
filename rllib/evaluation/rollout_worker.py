@@ -47,7 +47,7 @@ from ray.util.iter import ParallelIteratorWorker
 
 from collections import OrderedDict
 from gatsbi_rl.gatsbi.arch import ARCH
-from gatsbi_rl.baselines.slide_to_target_config import CFG
+from gatsbi_rl.baselines.clear_objects_config import CFG
 
 if TYPE_CHECKING:
     from ray.rllib.evaluation.observation_function import ObservationFunction
@@ -989,7 +989,7 @@ class RolloutWorker(ParallelIteratorWorker):
         for pid, state in objs["state"].items():
             # TODO (chmin): add parameter filtering here.
             # checkpoint = OrderedDict(filter(lambda p: p[0].split('.')[0] == 'kypt_detector', checkpoint.items()))
-            if ARCH.FILTER_GATSBI_AGENT:
+            if ARCH.FILTER_GATSBI_AGENT and not CFG.NOT_GATSBI:
                 state = OrderedDict(filter(lambda p: (
                     # (p[0].split('.')[0] == 'obj_module' and p[0].split('.')[1] != 'extract_global_agent_feature' and
                 #    (p[0].split('.')[2] != 'uncertain_attention' if len(p[0].split('.')) >=3 
@@ -998,17 +998,18 @@ class RolloutWorker(ParallelIteratorWorker):
                     p[0].split('.')[0] == 'mixture_module' or 
                     p[0].split('.')[0] == 'keypoint_module' or
                     p[0].split('.')[0] == 'agent_depth' or
-                    p[0].split('.')[0] == 'reward' or
-                    p[0].split('.')[0] == 'actor' or
-                    p[0].split('.')[0] == 'value' or
+                    # p[0].split('.')[0] == 'reward' or
+                    # p[0].split('.')[0] == 'actor' or
+                    # p[0].split('.')[0] == 'value1' or
+                    # p[0].split('.')[0] == 'value2' or
+                    # p[0].split('.')[0] == 'value_targ1' or
+                    # p[0].split('.')[0] == 'value_targ2' or
                     p[0].split('.')[0] == 'occl_metric'
                     # p[0].split('.')[0] == '_optimizer_variables'
                     ), state.items()))
                 prev_state = self.policy_map[pid].get_state()
                 prev_state.update(state)
                 state = prev_state
-            # TODO (chmin): filter additional agents.
-            
             # checkpoint = OrderedDict({k[14:]: v for k, v in checkpoint.items()})  # substract 'kypt_detector.'
             # network.kypt_detector.load_state_dict(checkpoint)
 
