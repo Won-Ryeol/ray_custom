@@ -1000,10 +1000,9 @@ class RolloutWorker(ParallelIteratorWorker):
                     p[0].split('.')[0] == 'agent_depth' or
                     # p[0].split('.')[0] == 'reward' or
                     # p[0].split('.')[0] == 'actor' or
-                    # p[0].split('.')[0] == 'value1' or
-                    # p[0].split('.')[0] == 'value2' or
-                    # p[0].split('.')[0] == 'value_targ1' or
-                    # p[0].split('.')[0] == 'value_targ2' or
+                    # p[0].split('.')[0] == 'value' or
+                    # # p[0].split('.')[0] == 'actor_targ' or
+                    # p[0].split('.')[0] == 'value_targ' or
                     p[0].split('.')[0] == 'occl_metric'
                     # p[0].split('.')[0] == '_optimizer_variables'
                     ), state.items()))
