@@ -1004,7 +1004,6 @@ class RolloutWorker(ParallelIteratorWorker):
                     # p[0].split('.')[0] == 'reward' or
                     # p[0].split('.')[0] == 'actor' or
                     # p[0].split('.')[0] == 'value' or
-                    # # p[0].split('.')[0] == 'actor_targ' or
                     # p[0].split('.')[0] == 'value_targ' or
                     p[0].split('.')[0] == 'occl_metric'
                     # p[0].split('.')[0] == '_optimizer_variables'
