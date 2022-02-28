@@ -153,22 +153,24 @@ class MixtureModule(nn.Module):
                  nn.Linear(ARCH.IMG_ENC_HIDDEN_DIM, ARCH.Z_COMP_DIM)
         )
 
+        # TODO (chmin): vanilla gatsbi has no scale.
         # residual update network of z^m_{k,t}
         self.mask_residual_update = nn.Sequential(
             nn.Linear(2 * ARCH.Z_MASK_DIM, ARCH.RES_HIDDEN_DIM),
             nn.CELU(),
             nn.Linear(ARCH.RES_HIDDEN_DIM, ARCH.RES_HIDDEN_DIM),
             nn.CELU(),
-            nn.Linear(ARCH.RES_HIDDEN_DIM, 2 * ARCH.Z_MASK_DIM)
+            nn.Linear(ARCH.RES_HIDDEN_DIM ARCH.Z_MASK_DIM)
         )
         
+        # TODO (chmin): vanilla gatsbi has no scale.
         # residual update network of z^c_{k,t}
         self.comp_residual_update = nn.Sequential(
             nn.Linear(2 * ARCH.Z_COMP_DIM, ARCH.RES_HIDDEN_DIM),
             nn.CELU(),
             nn.Linear(ARCH.RES_HIDDEN_DIM, ARCH.RES_HIDDEN_DIM),
             nn.CELU(),
-            nn.Linear(ARCH.RES_HIDDEN_DIM, 2 * ARCH.Z_COMP_DIM)
+            nn.Linear(ARCH.RES_HIDDEN_DIM ARCH.Z_COMP_DIM)
         )
 
         # enhance the dimension of the action  of z^c_{k,t}
@@ -296,9 +298,8 @@ class MixtureModule(nn.Module):
             z_mask = z_mask_post.rsample()  # z^m_t
             # for t >= 1; residual update of the mask variable: z^m_{t+1,k} <- z^m_{t,k} + f(z^m_{t+1,k}, z^m_{t,k}) 
             if episodic_step > 0 and z_masks_prev is not None: # z_masks_prev is updated after t > 1.
-                res_m_latent, res_m_scale = torch.split(self.mask_residual_update(torch.cat([z_masks_prev[:, k], z_mask], dim=-1)),
-                    2 * [ARCH.Z_MASK_DIM], dim=-1) 
-                z_mask = torch.add(z_masks_prev[:, k], 2.0 * torch.nn.Hardsigmoid()(res_m_scale) * res_m_latent)
+                res_m_latent = self.mask_residual_update(torch.cat([z_masks_prev[:, k], z_mask], dim=-1))
+                z_mask = torch.add(z_masks_prev[:, k], ARCH.RESIDUAL_SCALE * res_m_latent)
             z_masks.append(z_mask)
             z_mask_k_prev = z_mask  # for autoregressive update.
             # condition action for decoding (cVAE scheme) 
@@ -334,10 +335,8 @@ class MixtureModule(nn.Module):
         # iterate over spatial component latents
         if episodic_step > 0 and z_comps_prev is not None: # residual exists for t > 0.
             for k in range(ARCH.K):
-                res_c_latent, res_c_scale = torch.split(self.comp_residual_update(torch.cat([z_comps_prev[:, k], z_comps_raw[:, k]], dim=-1)),
-                    2 * [ARCH.Z_COMP_DIM], dim=-1)
-                z_comp = torch.add(z_comps_prev[:, k], 2.0 * torch.nn.Hardsigmoid()(res_c_scale) * res_c_latent)
-                #? Do I have to append comp latents?
+                res_c_latent = self.comp_residual_update(torch.cat([z_comps_prev[:, k], z_comps_raw[:, k]], dim=-1))
+                z_comp = torch.add(z_comps_prev[:, k], ARCH.RESIDUAL_SCALE * res_c_latent)
                 z_comps.append(z_comp)
             # concatenate the component latents
             z_comps_cat = torch.stack(z_comps, dim=1) # [B, K, Zc]
@@ -773,7 +772,6 @@ class MixtureModule(nn.Module):
                 mode_enc = self.mode_enc(modes)
                 mode_enc = mode_enc.flatten(start_dim=1)  # [B * K, D]
                 bg_encs = self.mode_enc_fc(mode_enc).reshape(B, ARCH.K, -1)
-                bg_encs = bg_encs.detach()
 
                 # ! 3-1) temporal encode of z_mask & z_comp into h_post & h_prior -> update temporal latents along T-axis
                 h_mask_t_post = h_mask_t_post.reshape(B * ARCH.K, -1)

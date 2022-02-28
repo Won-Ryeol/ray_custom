@@ -18,11 +18,9 @@ from collections import defaultdict
 from contextlib import nullcontext
 
 # TODO (chmin): clean up the imports.
+# TODO (chmin): vanilla gatsbi has no occlusion-related modules.
+from ray.rllib.agents.gatsbi_van.modules.arch import ARCH
 
-from gatsbi_rl.gatsbi.arch import ARCH
-
-from gatsbi_rl.gatsbi.occlusion_policy import OcclusionPolicy
-from gatsbi_rl.gatsbi.occlusion_policy import generate_heatmaps
 from IQA_pytorch import SSIM, MS_SSIM
 
 class ObjModule(nn.Module):
@@ -41,14 +39,11 @@ class ObjModule(nn.Module):
         self.img_encoder = ImgEncoder()
         self.proposal_encoder = ProposalEncoder()
         self.proposal_obj_encoder = ProposalEncoder()
-        self.occlusion_diff_encoder = ProposalEncoder()
 
         self.pred_proposal = PredProposal()
         self.glimpse_decoder = GlimpseDecoder()
         self.latent_post_disc = LatentPostDisc()
-        self.latent_post_disc_action = LatentPostDisc() #! action-conditioned
         self.latent_post_prop = LatentPostProp()
-        # self.latent_post_prop_action = LatentPostProp() #! action-conditioned
         self.latent_prior_prop = LatentPriorProp()
         self.latent_prior_prop_action = LatentPriorProp()
         self.pres_depth_where_what_prior = PresDepthWhereWhatPrior()
@@ -173,49 +168,28 @@ class ObjModule(nn.Module):
 
         self.extract_global_agent_feature = MLP(
             (
-                ARCH.Z_MASK_DIM + ARCH.RNN_CTX_MASK_HIDDEN_DIM,
+                ARCH.Z_MASK_DIM + ARCH.RNN_CTX_MASK_HIDDEN_DIM + 1,
                 *ARCH.GLOBAL_AGENT_MLP_LAYERS,
                 ARCH.Z_MASK_DIM,
             ),
             act=nn.CELU(),
         )
 
-        self.extract_positional_agent_feature = MLP(
+        self.extract_ao_attention = MLP(
             (
-                ARCH.Z_SHIFT_DIM + ARCH.Z_DEPTH_DIM,
-                *[32, 32],
-                16,
+                ARCH.Z_WHERE_DIM + ARCH.RNN_INPUT_DIM +  ARCH.ACTION_ENHANCE + ARCH.RNN_CTX_MASK_HIDDEN_DIM,
+                *ARCH.AO_ATTENTION_MLP_LAYERS,
+                1
             ),
-            act=nn.CELU(),
-        )
-
-        self.extract_agent_feature = MLP(
-            (
-                ARCH.Z_MASK_DIM + 16 + ARCH.ACTION_ENHANCE,
-                *[64, 64],
-                64
-            ),
-            act=nn.CELU(),
-        )
-
-        self.extract_total_feature = MLP(
-            (
-                64 + ARCH.BG_PROPOSAL_DIM,
-                *[128, 64],
-                64
-            ),
-            act=nn.CELU(),
+            act=nn.Tanh(),
         )
 
         # placeholder
         self.start_id = torch.zeros(1).long()
-
-        self.occlu_policy = OcclusionPolicy()
         
         # list to compute the distribution alignment of z_occ
         self.z_occ_list = []
         self.global_step = 0
-
 
     def anneal(self, global_step):
         self.tau = anneal(global_step, ARCH.TAU_START_STEP, ARCH.TAU_END_STEP,
@@ -302,17 +276,7 @@ class ObjModule(nn.Module):
 
         stop_discover = False
         if episodic_step is not None and episodic_step > 100:
-        # if episodic_step is not None and episodic_step > 20:
             stop_discover = True
-
-
-        #! check if given step is the first step of an episode.
-        ids = history[-1] # history[-2]
-        # first = True if ids.max() == ids.min() else False
-        # first = True if ids.max() == 0 else False
-
-        #! what's inside the history 6, 7, 8, 9, 10, 11, 12, 13
-        # post_obj = state[6:14] # z_pres, z_depth, z_where, z_what, z_dyna, h_obj, c_obj, ids
 
         # return h+c states, sto_latents, and obj ides
         z_pres, z_depth, z_where, z_what, z_dyna, h_obj, c_obj, ids = history
@@ -329,41 +293,32 @@ class ObjModule(nn.Module):
         if first:
             self.start_id = torch.zeros(B, device=obs.device).long()
 
-            _agent_kypt = agent_kypt.clone()
-            agent_kypt_first = torch.cat([_agent_kypt[..., 0][..., None], 
-                - _agent_kypt[..., 1][..., None], _agent_kypt[..., -1][..., None]], dim=-1)
+            # TODO (chmin): deprecated.
+            # _agent_kypt = agent_kypt.clone()
+            # agent_kypt_first = torch.cat([_agent_kypt[..., 0][..., None], 
+            #     - _agent_kypt[..., 1][..., None], _agent_kypt[..., -1][..., None]], dim=-1)
 
-            setattr(self, "agent_kypt_prev", agent_kypt_first.clone().detach())
+            # setattr(self, "agent_kypt_prev", agent_kypt_first.clone().detach())
 
         x = obs # [B, 3, H, W]
-        # # Update object states: propagate from prev step to current step
-        # TODO (chmin): track the shape of 'state_post'
-        state_post_prop, state_prior_prop, z_prop, _, proposal, z_occ_ent, \
-            z_occ, *_, proposal_scale_update = self.propagate( 
+        # Update object states: propagate from prev step to current step
+        state_post_prop, state_prior_prop, z_prop, _, proposal = self.propagate( 
             x, fg, state_post, state_prior, z, mix, z_agent, h_agent, enhanced_act,
-            first=first, agent_depth=agent_depth, agent_kypt=agent_kypt
-            )
+            first=first)
 
         ids_prop = ids
-        # TODO (chmin): return the history
         if (first or torch.rand(1) > discovery_dropout) and not stop_discover:
-            state_post_disc, state_prior_disc, z_disc, ids_disc, _, _, _, z_occ_disc \
-            = self.discover(
-                x, z_prop, mix, self.start_id, z_agent, h_agent, enhanced_act,
-                agent_depth=agent_depth, agent_kypt=agent_kypt, z_occ_prop=z_occ,
-                proposal_scale_update=proposal_scale_update
-            )
+            state_post_disc, state_prior_disc, z_disc, ids_disc, _, _, _ \
+            = self.discover(x, z_prop, mix, self.start_id, z_agent, h_agent, enhanced_act)
         else: # Do not conduct discovery
             state_post_disc, state_prior_disc, z_disc, ids_disc = self.get_dummy_things(B, obs.device)
             z_occ_disc = torch.zeros(B, ARCH.MAX, 1).to(obs.device)
             
         # Combine discovered and propagated things, and sort by p(z_pres)
         state_post, state_prior, z, ids, proposal, z_occ_combined = self.combine(
-            state_post_disc, state_prior_disc, z_disc, ids_disc, z_disc[2], z_occ_disc,
-            state_post_prop, state_prior_prop, z_prop, ids_prop, proposal, z_occ
+            state_post_disc, state_prior_disc, z_disc, ids_disc, z_disc[2],
+            state_post_prop, state_prior_prop, z_prop, ids_prop, proposal,
         )
-
-        setattr(self, "z_occ_prev", z_occ_combined.clone().detach())
 
         fg, alpha_map, _importance_map, y_att, alpha_att_hat = self.render(z)
         # TODO (chmin): verify this.
@@ -380,8 +335,7 @@ class ObjModule(nn.Module):
             proposal=proposal,  # (B, N, 4)
             alpha_map=alpha_map,  # (B, 1, H, W)
             z_objs=z,
-            h_c_objs=state_post, # [B, N, H] # RNN hidden state of the object.
-            z_occ=z_occ_combined,
+            h_c_objs=state_post # [B, N, H] # RNN hidden state of the object.
         )
         return things
 
@@ -745,9 +699,7 @@ class ObjModule(nn.Module):
         )
         return things
 
-    def discover(self, x, z_prop, bg, start_id=0, z_agent=None, h_agent=None, enhanced_act=None,
-            leverage=False, backup=False, agent_depth=None, agent_kypt=None, z_occ_prop=None, 
-            proposal_scale_update=None):
+    def discover(self, x, z_prop, bg, start_id=0, z_agent=None, h_agent=None, enhanced_act=None):
         """ # Sec A.3. of supl.
         Given current image and propagated objects, discover new objects
         Args:
@@ -878,7 +830,7 @@ class ObjModule(nn.Module):
         # kl_dyna = torch.zeros_like(kl_dyna)
         kl = (kl_pres, kl_depth, kl_where, kl_what, kl_dyna)
 
-        return state_post, state_prior, z, ids, kl, prop_map, x_enc, z_occ_disc
+        return state_post, state_prior, z, ids, kl, prop_map, x_enc
 
     def propagate_gen(self, state_prev, z_prev, bg, sample=False, z_agent=None, h_agent=None, enhanced_act=None,
         agent_depth=None, agent_kypt=None):
@@ -1003,7 +955,7 @@ class ObjModule(nn.Module):
 
 
     def propagate(self, x, fg, state_post_prev, state_prior_prev, z_prev, bg, z_agent, h_agent, 
-        enhanced_act, first=False, agent_depth=None, agent_kypt=None):
+        enhanced_act, first=False):
         """
         # One step posterior propagation
         Args:
@@ -1038,75 +990,42 @@ class ObjModule(nn.Module):
 
         z_pres_prev, z_depth_prev, z_where_prev, z_what_prev, z_dyna_prev = z_prev
         if len(z_pres_prev.size()) == 4: # exception handling
-            z_pres_prev = torch.squeeze(z_pres_prev, 0) #! problem occurs at the start of an episode
+            z_pres_prev = torch.squeeze(z_pres_prev, 0)
         B, N, _ = z_pres_prev.size() # [B, N (max), 1]
-        # TODO (chmin: the first step should be recognized in another way.)
         if first: # num of entities. zero if nothing has been discovered before
             # No object is propagated -> then do discovery self.render(z_prev)[0]
-            return state_post_prev, state_prior_prev, z_prev, (0.0, 0.0, 0.0, 
-                0.0, 0.0), z_prev[2],\
-                torch.zeros((B, ARCH.MAX, 1), device=x.device), torch.zeros((B, ARCH.MAX, 1), device=x.device), \
-                torch.zeros((B, ARCH.MAX, 1), device=x.device), \
-                torch.zeros(B, ARCH.MAX, 2, device=x.device), torch.zeros(B, ARCH.MAX, 2, device=x.device), \
-                torch.zeros(B, ARCH.MAX, 1, device=x.device), torch.zeros(B, ARCH.MAX, 2, device=x.device)
+            return state_post_prev, state_prior_prev, z_prev, (0.0, 0.0, 0.0, 0.0, 0.0)
 
         # self.render(z_prev)[0]
         h_post, c_post = state_post_prev # [B, N, 128], [B, N, 128] # NOTE that h_post is inferred by Eq.(18)
         h_prior, c_prior = state_prior_prev # [B, N, 128], [B, N, 128]
-        #! 1) Inference procedure of "propagate": Sec A.2 of supl.
+
         # Predict proposal locations, (B, N, 2)
         proposal_offset = self.pred_proposal(h_post) #! Eq.(19) of supl., by posterior OS-RNN; h_{hat}_{t-1}^k
         proposal = torch.zeros_like(z_where_prev) # [B, N, 4] -> size of proposal area
+
         # Update size only; extract proposal region of the image, centered @ the prev. obj. location o_{t-1}^{xy,k}
         proposal[..., 2:] = z_where_prev[..., 2:] # o^{xy} - (x,y)
         proposal[..., :2] = z_where_prev[..., :2] + ARCH.PROPOSAL_UPDATE_MIN + ( #! o^{hw}; Eq.(19) of supl., (h,w)
             ARCH.PROPOSAL_UPDATE_MAX - ARCH.PROPOSAL_UPDATE_MIN) * torch.sigmoid(proposal_offset)
-        proposal_scale_update = (ARCH.PROPOSAL_UPDATE_MIN + (
-            ARCH.PROPOSAL_UPDATE_MAX - ARCH.PROPOSAL_UPDATE_MIN) * torch.sigmoid(proposal_offset)).clone().detach()
-        # proposal_offset -> (0,1) ->  relocate & rescale to (0.1, 0.3)
+
         # Get proposal glimpses S
         # x_repeat: (B*N, 3, H, W) -> observation for each object N.
         x_repeat = torch.repeat_interleave(x[:, :3], N, dim=0) # crop-out the first three channel.
-        # x_repeat = torch.repeat_interleave(x[:, 3:], N, dim=0) # crop-out the first three channel.
         # if N = 5 & batch is a, b, ..., : aaaaabbbbbccccc ... # if torch.repeat ab...ab...ab...ab...ab...
 
-        #! arch.glimpse_shape = [16, 16] # TODO (chmin): find the input shape of spatia
         # (B*N, 3, H, W) #! Eq.(4) of paper
         proposal_glimpses = spatial_transform(image=x_repeat, z_where=proposal.view(B * N, 4), #! Eq.(20) of supl.
                     out_dims=(B * N, 3, *ARCH.GLIMPSE_SHAPE))
 
-        # TODO (chmin): rather create occlusion glimpses
-        occlusion_glimpses = spatial_transform(image=x_repeat, z_where=z_where_prev.view(B * N, 4), #! Eq.(20) of supl.
-                    out_dims=(B * N, 3, *ARCH.GLIMPSE_SHAPE))
-
         # (B, N, 3, H, W) proposal_glimpses.reshape(-1, 3, 16, 16)
         proposal_glimpses = proposal_glimpses.view(B, N, 3, *ARCH.GLIMPSE_SHAPE)
-        occlusion_glimpses = occlusion_glimpses.view(B, N, 3, *ARCH.GLIMPSE_SHAPE)
 
         # (B, N, D) occlusion_glimpses.reshape(-1, 3, 16, 16)
         proposal_enc = self.proposal_encoder(proposal_glimpses) #! Eq.(21) of supl.
 
-        occ_enc = self.occlusion_diff_encoder(occlusion_glimpses) # [B, N, D]
-
-        # TODO (chmin): add additional features. (difference between the agent-keypoint position and depth)
-
         # (B, N, D)
-        # This will be used to condition everything: #* encode local observation again
-        # every update under occlusion should occur for special cases where z_occ ~ 1.
-        _agent_kypt = agent_kypt.clone()
-
-        agent_kypt = torch.cat([_agent_kypt[..., 0][..., None], 
-            - _agent_kypt[..., 1][..., None], _agent_kypt[..., -1][..., None]], dim=-1)
-        # TODO (chmin): z_occ should be inferred before z_pres
-        z_occ, kl_occ, _, z_occ_ent, z_occ_post_prob, occ_feat_cat = self.occlu_policy.z_occ_post(
-            proposal_enc=occ_enc,
-            proposal=z_where_prev,
-            agent_kypt=agent_kypt,
-            z_depth=torch.sigmoid(-z_depth_prev),
-            z_agent_depth=agent_depth,
-            z_agent=z_agent,
-            enhanced_act=enhanced_act
-        )
+        # This will be used to condition everything:
         enc = torch.cat([proposal_enc, h_post], dim=-1) # [B, N, D] + [B, N, D] = [B, N, 2D]
 
         z_dyna_loc, z_dyna_scale = self.latent_post_prop(enc) #! Eq.(22) of supl.
@@ -1116,59 +1035,35 @@ class ObjModule(nn.Module):
         #! {pres, depth, where, what} are inferred from z_dyna  (B, N, D)
         (z_pres_prob, z_depth_offset_loc, z_depth_offset_scale, z_where_offset_loc, #! Eq.(13) of supl.
          z_where_offset_scale, z_what_offset_loc, z_what_offset_scale,
-         z_depth_gate, z_where_gate, z_what_gate, z_where_gate_raw) = self.pres_depth_where_what_prior(z_dyna, z_occ=z_occ)
+         z_depth_gate, z_where_gate, z_what_gate, z_where_gate_raw) = self.pres_depth_where_what_prior(z_dyna)
 
         # Sampling
         z_pres_post = RelaxedBernoulli(torch.tensor(self.tau, device=x.device), probs=z_pres_prob)  #! Eq.(14) of supl.
         z_pres = z_pres_post.rsample()
-
-        kl_occ = kl_occ.flatten(start_dim=1).sum(-1)
-        z_pres = (z_pres_prev / (1. + z_pres)) * (1. - z_occ) + z_pres_prev * z_occ   # -> refer to Sec 2.5 of PRML
-        # z_pres[occ_ind] = z_pres_prev[occ_ind].clone().detach()
+        z_pres = z_pres_prev * z_pres
 
         z_where_post = Normal(z_where_offset_loc, z_where_offset_scale)
         z_where_offset = z_where_post.rsample()  #! Eq.(16) of supl.
         z_where = torch.zeros_like(z_where_prev)
         # Scale; [B, N, 4] -> [B, N, 2] (mean), [B, N, 2] (shift).
         # if z_occ: update by this policy       fg
-        uncertain_pos_raw, uncertain_gate_raw, kl_uncertain = self.occlu_policy.sample_object(
-            agent_kypt=agent_kypt, proposal=z_where_prev, enhanced_act=enhanced_act, z_occ=z_occ,
-            z_agent=z_agent, h_agent=h_agent, agent_kypt_prev=self.agent_kypt_prev)
-        uncertain_pos = ARCH.Z_SHIFT_UPDATE_SCALE * torch.tanh(uncertain_pos_raw)
-        uncertain_gate = torch.sigmoid(uncertain_gate_raw)
-        kl_uncertain = kl_uncertain.sum([1, 2])
 
-        setattr(self, "agent_kypt_prev", agent_kypt.clone().detach())
         # TODO (chmin): z_occ ~ 1 (occlusion); z_occ ~ 0 (no occlusion)
         # it is not a sufficient reward signal when z_occ is ... z_occ ~ 1 
-        # scale
-        z_where[..., :2] = (z_where_prev[..., :2] + (1. - z_occ) * ARCH.Z_SCALE_UPDATE_SCALE * z_where_gate[..., :2] * torch.tanh(
-            z_where_offset[..., :2]))
-        
-        # shift
-        z_where[..., 2:] = z_where_prev[..., 2:] + (1. - z_occ) * ARCH.Z_SHIFT_UPDATE_SCALE * z_where_gate[..., 2:] * torch.tanh(
-            z_where_offset[..., 2:]) + z_occ * uncertain_gate * uncertain_pos
+        # Scale
+        z_where[..., :2] = z_where_prev[..., :2] + ARCH.Z_SCALE_UPDATE_SCALE * z_where_gate[..., :2] * torch.tanh(
+            z_where_offset[..., :2])
+        # Shift
+        z_where[..., 2:] = z_where_prev[..., 2:] + ARCH.Z_SHIFT_UPDATE_SCALE * z_where_gate[..., 2:] * torch.tanh(
+            z_where_offset[..., 2:])
 
-        z_where_offset_norm = (ARCH.Z_SHIFT_UPDATE_SCALE * (1 - z_occ) * z_where_gate_raw[..., 2:].abs() * z_where_offset[..., 2:])
-        uncertain_pos_norm = (uncertain_gate_raw.abs() * z_occ * uncertain_pos)
-        
-        # TODO (chmin): experimental
-        # z_where[occ_ind] = z_where_prev[occ_ind].clone().detach()
-        if self.global_step % 200 == 0 and torch.rand(1) > 2/3 and ARCH.DEBUG:
-            print("z_where_gate :", z_where_gate[..., 2:].max())
-            print("z_where_offset :", z_where_offset[..., 2:].max())
-            print("uncertain_pos :", uncertain_pos.max())
-
-        z_depth_post = Normal(z_depth_offset_loc, z_depth_offset_scale)
-        z_depth_offset = z_depth_post.rsample()  #! Eq.(15) of supl.
-        z_depth = z_depth_prev + (1. - z_occ) * ARCH.Z_DEPTH_UPDATE_SCALE * z_depth_gate * z_depth_offset # [B, D, 1]
-
-        # TODO (chmin): experimental
-        # z_depth[occ_ind] = z_depth_prev[occ_ind].clone().detach()
+        z_depth_prior = Normal(z_depth_offset_loc, z_depth_offset_scale)
+        z_depth_offset = z_depth_prior.rsample()
+        z_depth = z_depth_prev + ARCH.Z_DEPTH_UPDATE_SCALE * z_depth_gate * z_depth_offset
 
         z_what_post = Normal(z_what_offset_loc, z_what_offset_scale)
         z_what_offset = z_what_post.rsample()  #! Eq.(17) of supl.
-        z_what = z_what_prev + (1. - z_occ) * ARCH.Z_WHAT_UPDATE_SCALE * z_what_gate * torch.tanh(z_what_offset) # [B, D, 64]
+        z_what = z_what_prev + ARCH.Z_WHAT_UPDATE_SCALE * z_what_gate * torch.tanh(z_what_offset)
 
         # TODO (chmin): experimental
         # z_what[occ_ind] = z_what_prev[occ_ind].clone().detach()
@@ -1177,27 +1072,22 @@ class ObjModule(nn.Module):
 
         # TODO (chmin): agent-object interaction.
         # Update states via RNN; In: state_*_prev - hidden & cell state of RNN, z - tuple of z_att and z_dyna
-        # self.render(z)[0]
-        state_post = self.temporal_encode(state_post_prev, z, bg, z_agent, h_agent, agent_depth, 
-            enhanced_act, prior_or_post='post', agent_kypt=agent_kypt, z_occ=z_occ)
-        state_prior = self.temporal_encode(state_prior_prev, z, bg, z_agent, h_agent, agent_depth,
-            enhanced_act, prior_or_post='prior', agent_kypt=agent_kypt, z_occ=z_occ)
+
+        state_post = self.temporal_encode(state_post_prev, z, bg, z_agent, h_agent,  
+            enhanced_act, prior_or_post='post')
+        state_prior = self.temporal_encode(state_prior_prev, z, bg, z_agent, h_agent,
+            enhanced_act, prior_or_post='prior')
 
         z_dyna_loc, z_dyna_scale = self.latent_prior_prop(h_prior) #! Eq(23) of supl.
         z_dyna_prior = Normal(z_dyna_loc, z_dyna_scale)
         kl_dyna = kl_divergence(z_dyna_post, z_dyna_prior) #! we get post & prior z_{dyna} from each Eq.(23) and Eq.(12)
-        # TODO (chmin): check the shape of kl divergece
         #! This is not kl divergence. This is an auxialiary loss q(z_pres|) is fit to fixed prior
         kl_pres = kl_divergence_bern_bern(z_pres_prob, torch.full_like(z_pres_prob, self.z_pres_prior_prob))
         # If we don't want this auxiliary loss
         if not ARCH.AUX_PRES_KL:
             kl_pres = torch.zeros_like(kl_pres)
 
-        # TODO (chmin): for experimental results 
-        # object_heatmap = generate_heatmaps(keypoints=torch.cat([proposal[..., 2:], torch.ones(B, N, 1).to(fg.device)], dim=-1)).sum(1)[:, None]  # [B, K, 64, 64]
-
         # Reduced to (B,)
-
         #! Sec. 3.4.2 of paper; Again, this is not really kl
         kl_pres = kl_pres.flatten(start_dim=1).sum(-1)
         kl_dyna = kl_dyna.flatten(start_dim=1).sum(-1)
@@ -1207,39 +1097,11 @@ class ObjModule(nn.Module):
         kl_what = torch.zeros_like(kl_pres)
         kl_depth = torch.zeros_like(kl_pres)
         assert kl_pres.size(0) == B
-        kl = (kl_pres, kl_depth, kl_where, kl_what, kl_dyna, kl_occ, kl_uncertain)
+        kl = (kl_pres, kl_depth, kl_where, kl_what, kl_dyna)
 
         # return the updated RNN states and the stochastic latent.
-        return (state_post, state_prior, z, kl, proposal, z_occ, 
-            z_occ_post_prob, z_pres_prob, z_where_offset_norm, 
-            uncertain_pos_norm, z_depth_offset, proposal_scale_update)
+        return state_post, state_prior, z, kl, proposal
         
-    def distribution_alignment(self, z_occ):
-        """
-            Distribtuion alignment adopted from CoMatch and ReMixMatch
-            z_occ: [B, N, 1]
-            CM: https://github.com/salesforce/CoMatch
-            RMM: https://openreview.net/pdf?id=HklkeR4KPB
-        
-        """
-
-
-        z_occ_temp = z_occ.clone()
-        z_occ_neg = 1.  - z_occ_temp
-        z_occ = torch.cat([z_occ_temp, z_occ_neg], dim=-1) # [B, N, 2]
-
-        self.z_occ_list.append(z_occ.mean(0).detach())
-        if len(self.z_occ_list) > 64:
-            self.z_occ_list.pop(0)
-
-        z_occ_avg = torch.stack(self.z_occ_list, dim=0).mean(0)
-        _z_occ = z_occ / z_occ_avg
-
-        _z_occ = _z_occ / _z_occ.sum(-1, keepdim=True) # normalize over logit axis.
-        z_occ = _z_occ[..., 0][..., None].clone()
-
-        return z_occ
-
     def compute_prop_map(self, z_prop):
         """ #! please refer to paragraph below Eq.(31) of supl.
         Compute a feature volume to condition discovery. The purpose is not to rediscover objects
@@ -1449,8 +1311,7 @@ class ObjModule(nn.Module):
 
         return z_where
 
-    def temporal_encode(self, state, z, bg, z_agent, h_agent, agent_depth, 
-        enhanced_act, prior_or_post, agent_kypt=None, z_occ=None):
+    def temporal_encode(self, state, z, bg, z_agent, h_agent, enhanced_act, prior_or_post):
         """
         Encode history into rnn states
         Args:
@@ -1465,7 +1326,6 @@ class ObjModule(nn.Module):
             prop_cond: (B, N, D), t-1
             bg: [B, 3, dim, dim], t
             prior_or_post: either 'prior' or 'post
-
         Returns:
             state:
                 h: (B, N, D)
@@ -1478,45 +1338,30 @@ class ObjModule(nn.Module):
         prop_cond = self.compute_prop_cond(z, state, prior_or_post) # Sec. 3.3.1 - Interaction & Occlusion
         bg_enc = self.bg_attention(bg, z) # Sec. 3.3.2 - Situation Awareness #(B, OBJECT_MAX_NUM, D)
         # 1. agent feature and obj features
-        # h_obj, c_obj = state # [B, G*G, H_o]
-        z_pres, z_depth, z_where, z_what, z_dyna = z
-        z_depth = torch.sigmoid(-z_depth) # in a same range with the agent depth.
-        z_where = z_where[..., 2:] 
-        agent_depth = agent_depth[:, None] # [B, 1, 1]
-
-        # agent_kypt_mean = torch.mean(agent_kypt[..., :2], dim=1, keepdim=True) # [B, 1, 2] mean position of agent keypoints.
-        kypt_pos = agent_kypt[..., :2]
-        kypt_weight = agent_kypt[...,-1][..., None] # [B, K, 1]
-        agent_kypt_mean = (kypt_pos * kypt_weight).sum(1, keepdim=True) / kypt_weight.sum(1, keepdim=True)
-        
-        agent_to_obj_where = z_where - agent_kypt_mean # [B, N, 2] positional vector from agent to each object.
-        agent_to_obj_depth = z_depth - agent_depth # [B, N, 1]
-
-        if len(h_agent.size()) == 1:
-            h_agent = h_agent[None]
-        agent_feature = torch.cat([z_agent, h_agent], dim=-1)
-        agent_feature = self.extract_global_agent_feature(agent_feature) # [B,32]
-        agent_feature = agent_feature[:, None].repeat(1, N, 1) # [B, 1 ,32]
-
-        positional_position = torch.cat([agent_to_obj_where, agent_to_obj_depth], dim=-1)
-        positional_position = self.extract_positional_agent_feature(positional_position) # [B, N, 16]
-
-        enhanced_act = enhanced_act[:, None].repeat(1, N, 1)
-        # TODO (chmin): utilize h_obj.
-        agent_feature = torch.cat([agent_feature, positional_position, 
-            enhanced_act], dim=-1)
-
-        agent_feature = self.extract_agent_feature(agent_feature) # [B, N, 64]
-        # scale by z_pres
-
-        total_feature = self.extract_total_feature(torch.cat([
-            agent_feature, bg_enc], dim=-1)) # [B, N, 64]
+        if ARCH.AGENT_INTERACTION_MODE >= 2:
+            h_obj, c_obj = state # [B, G*G, H_o]
+            z_obj = torch.cat(z, dim=-1)
+            if len(h_agent.size()) == 1:
+                h_agent = h_agent[None]
+            # TODO (Chmin): concat z_depth here.
+            u_agent = torch.cat([z_agent, h_agent], dim=-1)
+            u_agent = torch.stack([u_agent] * N, dim=1)
+            u_obj = torch.cat([z_obj, h_obj], dim=-1)
+            if ARCH.AGENT_INTERACTION_MODE == 2: # GATSBI.
+                glob_feat_agent = self.extract_global_agent_feature(u_agent)
+                ambient_enc = self.agent_object_interaction(torch.cat((bg_enc, glob_feat_agent), dim=-1))
+            elif ARCH.AGENT_INTERACTION_MODE == 3:
+                loc_feat_agent = self.extract_local_agent_feature(torch.cat([u_obj, u_agent], dim=-1))
+                u_pos_agent = torch.stack([torch.cat([enhanced_act, h_agent], dim=-1)] * N, dim=1)
+                u_pos_obj = torch.cat([z[2], h_obj], dim=-1)
+                ao_attention = self.extract_ao_attention(torch.cat((u_pos_obj, u_pos_agent), dim=-1))
+                ao_attention = (ao_attention + 0.5) / 2
+                ambient_enc = self.agent_object_interaction(torch.cat((bg_enc, loc_feat_agent * ao_attention), dim=-1))
+        else:
+            ambient_enc = bg_enc
+        # bg_enc - (B, N, D)
         # Also encode interaction here
-
-        # scale by z_pres
-        total_feature = z_pres * total_feature
-
-        z = torch.cat(z + (prop_cond, total_feature, z_occ), dim=-1)
+        z = torch.cat(z + (prop_cond, ambient_enc), dim=-1)
 
         # BatchApply is a cool thing and it works here.
         if prior_or_post == 'post':
@@ -1694,8 +1539,8 @@ class ObjModule(nn.Module):
 
 
     def combine(self,
-                state_post_disc, state_prior_disc, z_disc, ids_disc, proposal_disc, z_occ_disc,
-                state_post_prop, state_prior_prop, z_prop, ids_prop, proposal_prop, z_occ_prop):
+                state_post_disc, state_prior_disc, z_disc, ids_disc, proposal_disc,
+                state_post_prop, state_prior_prop, z_prop, ids_prop, proposal_prop):
         """
         Args: # TODO (chmin): debug the shape
             state_post_disc:
@@ -2164,13 +2009,13 @@ class PresDepthWhereWhatPrior(nn.Module):
     def __init__(self):
         nn.Module.__init__(self)
         self.enc = MLP( #! encodes z_dyna into z_pres, z_depth, z_what, z_where
-            [ARCH.Z_DYNA_DIM + 1, 128, 128,
+            [ARCH.Z_DYNA_DIM, 128, 128,
              ARCH.Z_PRES_DIM + (ARCH.Z_DEPTH_DIM + ARCH.Z_WHERE_DIM + ARCH.Z_WHAT_DIM) * 2 + (
                      ARCH.Z_DEPTH_DIM + ARCH.Z_WHERE_DIM + ARCH.Z_WHAT_DIM
              )
              ], act=nn.CELU())
 
-    def forward(self, enc, z_occ):
+    def forward(self, enc):
         """
         Args:
             enc: (B, N, D)
@@ -2185,8 +2030,7 @@ class PresDepthWhereWhatPrior(nn.Module):
             z_what_gate: (B, N, D)
         """
         # (B, N, D)
-        enc_occ = torch.cat([enc, z_occ], dim=-1)
-        params = self.enc(enc_occ) #
+        params = self.enc(enc) #
         # split into [Z_PRES(1), Z_DEPTH(1), Z_DEPTH, Z_WHERE(4), Z_WHERE, Z_WHAT(64), Z_WHAT, Z_DEPTH, Z_WHERE, Z_WHAT] = 208
         (z_pres_prob, z_depth_loc, z_depth_scale, z_where_loc, z_where_scale,
          z_what_loc, z_what_scale,
