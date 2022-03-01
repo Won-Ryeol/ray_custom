@@ -9,25 +9,22 @@ from ray.rllib.models.torch.torch_modelv2 import TorchModelV2
 from ray.rllib.utils.framework import try_import_torch
 from ray.rllib.utils.framework import TensorType
 
-#* import reference
-from ray.rllib.agents.dreamer.utils
-
-
-
 torch, nn = try_import_torch()
 from torch import distributions as td
-# from gatsbi_rl.rllib_agent.utils import Linear, TanhBijector
-from .utils import Linear, TanhBijector, scale_action
-from ray.rllib.agents.gatsbi_van.utils import Linear, TanhBijector, bcolors
-# GATSBI model related modules.
+from gatsbi_rl.rllib_agent.utils import Linear, TanhBijector
 
-# import GATSBI vanilla related submodules.
-from ray.rllib.agents.gatsbi_van.modules.mix import *
-from ray.rllib.agents.gatsbi_van.modules.module import anneal
-from ray.rllib.agents.gatsbi_van.modules.arch import ARCH
-from ray.rllib.agents.gatsbi_van.modules.mix import MixtureModule
-from ray.rllib.agents.gatsbi_van.modules.obj import ObjModule
-from ray.rllib.agents.gatsbi_van.modules.keypoint import KeypointModule
+# GATSBI model related modules.
+from gatsbi_rl.gatsbi.mix import *
+from gatsbi_rl.gatsbi.module import anneal
+from gatsbi_rl.gatsbi.arch import ARCH
+from gatsbi_rl.gatsbi.obj import ObjModule # foreground module
+from gatsbi_rl.gatsbi.mix import MixtureModule # mixture representation of the scene
+from gatsbi_rl.gatsbi.keypoint import KeypointModule
+from gatsbi_rl.gatsbi.arcmargin import ArcMarginProduct
+import torchvision
+
+# TODO (chmin): Experimental. Add submodule to infer the depth of the agent layer.
+from gatsbi_rl.gatsbi.agent_depth import AgentDepth
 
 from .utils import scale_action
 # import visualizer of training GATSBI.
@@ -157,8 +154,7 @@ class OneHotDist(td.OneHotCategorical):
     return indices
 
 
-
-# Represents dreamer policy
+# Represents gatsbi policy
 class ActionDecoder(nn.Module):
     """ActionDecoder is the policy module in GATSBI. It outputs a distribution
     parameterized by mean and std, later to be traed by a custom
@@ -240,12 +236,8 @@ class ActionDecoder(nn.Module):
         return self.model(x)
 
 
-class GATSBIVanModel(TorchModelV2, nn.Module):
+class GATSBIModel(TorchModelV2, nn.Module):
     def __init__(self, obs_space, action_space, num_outputs, model_config, name, agent_slot_idx=0):
-        """
-            Vanilla version of GATSBI.
-            TODO (chmin): refactoring required after publication.
-        """
         super().__init__(obs_space, action_space, num_outputs, 
                 model_config, name)
 
@@ -260,34 +252,43 @@ class GATSBIVanModel(TorchModelV2, nn.Module):
         self.DETACHED_T = ARCH.DETACHED_T[0]
 
         self.obj_module = ObjModule()
+        # TODO (chmin): make the action dimension parsable
         self.mixture_module = MixtureModule(action_dim=self.action_size)
         self.keypoint_module = KeypointModule()
 
-        #! vanilla gatsbi has no agent depth.
+        self.agent_depth = AgentDepth()
+
         # dimension of concatenation of structured latent variables.
         # [1, K * Zm + K * Zc + N * Z(w+w+p...) } + K * Hm + K * Hc + H(w+w+p...)]
 
-        # TODO (chmin): vanilla agent should not have deph!
-
         self.feat_dim = (ARCH.K * ARCH.Z_MASK_DIM +   # agent mask
-                            2 + # agent pos + agent_depth
+                            # ARCH.ACTION_DIM + # action dim 
+                            2 + 1 + # agent pos + agent_depth
                             ARCH.MAX *(
                                 ARCH.Z_SHIFT_DIM +  # ao-rel-pos
                                 ARCH.Z_DEPTH_DIM +  # ao-rel-depth
-                                ARCH.Z_WHAT_DIM  # object_shape
+                                # ARCH.Z_PRES_DIM +  # object_pres
+                                # ARCH.Z_SCALE_DIM +  # object_scale
+                                ARCH.Z_WHAT_DIM +  # object_shape
+                                1  # occlusion
                             )
                         )
 
         self.reward_feat_dim = (ARCH.K * ARCH.Z_MASK_DIM +   # agent mask
-                            2 + # agent pos + agent_depth
+                            # ARCH.ACTION_DIM + # action dim 
+                            2 + 1 + # agent pos + agent_depth
                             ARCH.MAX *(
                                 ARCH.Z_SHIFT_DIM +  # ao-rel-pos
                                 ARCH.Z_DEPTH_DIM +  # ao-rel-depth
-                                ARCH.Z_WHAT_DIM  # object_shape
+                                # ARCH.Z_PRES_DIM +  # object_pres
+                                # ARCH.Z_SCALE_DIM +  # object_scale
+                                ARCH.Z_WHAT_DIM +  # object_shape
+                                1  # occlusion
                             )
                         )
 
         print(bcolors.WARNING + "Agent feature dimension is {0}".format(self.feat_dim) + bcolors.ENDC)
+
 
         self.reward = RewardDecoder(self.reward_feat_dim, 
                 1, 4, ARCH.DENSE_HIDDEN_DIM, act=nn.CELU,
@@ -316,7 +317,7 @@ class GATSBIVanModel(TorchModelV2, nn.Module):
                         sigma=ARCH.VALUE_SIGMA)
 
         self.actor_critic_sub_feat_dim = (ARCH.K * ARCH.Z_MASK_DIM +   # agent mask
-                            2 +  # agent pos + agent_depth
+                            2 + 1 + # agent pos + agent_depth
                         ARCH.MAX * ARCH.Z_SHIFT_DIM +  # object-pos + rel-pos to others
                             ARCH.Z_DEPTH_DIM +  # ao-rel-depth
                             ARCH.Z_WHAT_DIM +  # object_shape
@@ -324,6 +325,12 @@ class GATSBIVanModel(TorchModelV2, nn.Module):
                             # ARCH.MAX # sub policy index
                         )
 
+        # low level actor critics
+        # self.sub_actors = nn.ModuleList([
+        #         ActionDecoder(self.actor_critic_sub_feat_dim,
+        #         ARCH.ACTION_DIM, 3, ARCH.DENSE_HIDDEN_DIM,
+        #         dist="tanh_normal")  for i in range(ARCH.MAX)
+        #     ])
         self.actor_low = ActionDecoder(self.actor_critic_sub_feat_dim + ARCH.MAX,
                 ARCH.ACTION_DIM, 4, ARCH.DENSE_HIDDEN_DIM,
                 dist="tanh_normal")
@@ -348,15 +355,25 @@ class GATSBIVanModel(TorchModelV2, nn.Module):
         # TODO(chmin): create the submodules 
 
         self.reward_sub_feat_dim = (ARCH.K * ARCH.Z_MASK_DIM +   # agent mask
-                            2 + # agent pos + agent_depth
+                            2 + 1 + # agent pos + agent_depth
                         ARCH.MAX * ARCH.Z_SHIFT_DIM +  # object-pos + rel-pos to others
                             ARCH.Z_DEPTH_DIM +  # ao-rel-depth
-                            ARCH.Z_WHAT_DIM # object_shape
+                            ARCH.Z_WHAT_DIM +  # object_shape
+                            1  # occlusion
                         )
+
+        # self.sub_rewards = nn.ModuleList([
+        #         RewardDecoder(self.reward_sub_feat_dim, 
+        #         1, 2, ARCH.DENSE_HIDDEN_DIM, act=nn.CELU,
+        #         sigma=1.0) for i in range(ARCH.MAX)
+        #     ])
 
         self.sub_reward = RewardDecoder(self.reward_sub_feat_dim, 
                 1, 4, ARCH.DENSE_HIDDEN_DIM, act=nn.CELU,
                 sigma=1.0)
+
+        # for idx in range(ARCH.MAX):
+            # self.sub_rewards.add_module(f"obj_{idx}", reward_submodule)
 
         # stddev of the entire observation.
         self.sigma = ARCH.SIGMA
@@ -366,6 +383,9 @@ class GATSBIVanModel(TorchModelV2, nn.Module):
         self.episodic_step = 0 # it increases every policy inference.
         self.start_infer_flag = False # Flag to start policy inference after prefill steps.
         print(bcolors.OKGREEN + "Model is initialized with global step {0}".format(self.global_step) + bcolors.ENDC)
+
+        self.occl_metric = ArcMarginProduct(in_features=ARCH.PROPOSAL_ENC_DIM, out_features=2,
+            s=30, m=0.5, easy_margin=False)
 
         self.z_agent_mean = 0.0
         self.z_agent_std = 0.0
@@ -452,8 +472,8 @@ class GATSBIVanModel(TorchModelV2, nn.Module):
             for k in range(K)],device=masks.device), descending=True)
         return int(indices[0])
 
-    def get_feature_for_agent(self, z_masks, z_comps, z_objs, 
-            h_masks, h_comps, h_objs, action=None):
+    def get_intrinsic_reward(self, z_masks, z_comps, z_objs, 
+            h_masks, h_comps, h_objs, aux=None):
         """
             Constructs feature for input to reward, decoder, actor and critic.
             inputs consist of posterior history and stochastic latents of the scene.        
@@ -462,11 +482,45 @@ class GATSBIVanModel(TorchModelV2, nn.Module):
         agent_idx = self.agent_slot_idx
         bg_indices = torch.tensor([k for k in range(ARCH.K) if k != agent_idx], device=z_masks.device).long()
 
+        kypt_mean, z_agent_depth, z_occ = aux['kypt_mean'], aux['agent_depth'], aux['z_occ']
         # process agent-obj depth and position
         obj_position = z_objs[..., ARCH.Z_PRES_DIM + ARCH.Z_DEPTH_DIM:ARCH.Z_PRES_DIM 
             + ARCH.Z_DEPTH_DIM + ARCH.Z_WHERE_DIM][..., 2:] # [B, (T), N, 2]
+        ao_rel_pos = kypt_mean - obj_position.detach() # [B, (T), N, 2]
         obj_depth =  z_objs[..., ARCH.Z_PRES_DIM:ARCH.Z_PRES_DIM + ARCH.Z_DEPTH_DIM] # [B, (T), N, 2]
         obj_depth = torch.sigmoid(-obj_depth)  
+        z_agent_depth = z_agent_depth[..., None, :]
+        ao_rel_depth = z_agent_depth - obj_depth.detach() # [B, (T), N, 1]
+
+        imag_ao_pos_diff = ao_rel_pos.norm(dim=-1, keepdim=True) # [H, B, N, 2]
+        imag_ao_pos_diff = imag_ao_pos_diff.sum(-1).sum(-1)[:-1] # [H - 1, BT]
+
+        imag_ao_depth_diff = ao_rel_depth.norm(dim=-1, keepdim=True) # [H, B, N, 1]
+        imag_ao_depth_diff = imag_ao_depth_diff.sum(-1).sum(-1)[:-1] # [H - 1, BT]
+
+        return imag_ao_pos_diff, imag_ao_depth_diff
+
+
+
+    def get_feature_for_agent(self, z_masks, z_comps, z_objs, 
+            h_masks, h_comps, h_objs, aux=None, action=None):
+        """
+            Constructs feature for input to reward, decoder, actor and critic.
+            inputs consist of posterior history and stochastic latents of the scene.        
+        """
+        
+        agent_idx = self.agent_slot_idx
+        bg_indices = torch.tensor([k for k in range(ARCH.K) if k != agent_idx], device=z_masks.device).long()
+
+        kypt_mean, z_agent_depth, z_occ = aux['kypt_mean'], aux['agent_depth'], aux['z_occ']
+        # process agent-obj depth and position
+        obj_position = z_objs[..., ARCH.Z_PRES_DIM + ARCH.Z_DEPTH_DIM:ARCH.Z_PRES_DIM 
+            + ARCH.Z_DEPTH_DIM + ARCH.Z_WHERE_DIM][..., 2:] # [B, (T), N, 2]
+        ao_rel_pos = kypt_mean - obj_position # [B, (T), N, 2]
+        obj_depth =  z_objs[..., ARCH.Z_PRES_DIM:ARCH.Z_PRES_DIM + ARCH.Z_DEPTH_DIM] # [B, (T), N, 2]
+        obj_depth = torch.sigmoid(-obj_depth)  
+        z_agent_depth = z_agent_depth[..., None, :]
+        ao_rel_depth = z_agent_depth - obj_depth # [B, (T), N, 1]
         # TODO (chmin): don't forget z_occ
 
         z_agent = z_masks[..., agent_idx, :] # [B, T, Z]
@@ -478,7 +532,15 @@ class GATSBIVanModel(TorchModelV2, nn.Module):
         obj_what = z_objs[..., ARCH.Z_PRES_DIM + ARCH.Z_DEPTH_DIM + ARCH.Z_WHERE_DIM:ARCH.Z_PRES_DIM 
                 + ARCH.Z_DEPTH_DIM + ARCH.Z_WHERE_DIM + ARCH.Z_WHAT_DIM] # [B, T, N, 16]
         # obj pres should be a scale parameter.
-        cat_latents = [z_agent, z_bgs, obj_depth, obj_position, obj_what] # [B, T, *]
+
+        # cat_latents = [ARCH.AGENT_MASK_LATENT, ARCH.AGENT_COMP_LATENT, ARCH.BG_MASK_LATENT, ARCH.BG_COMP_LATENT,
+        #     ARCH.AGENT_MASK_HISTORY, ARCH.AGENT_COMP_HISTORY, ARCH.BG_MASK_HISTORY, ARCH.BG_COMP_HISTORY,
+        # ] + ARCH.OBJ_LATENT + [ARCH.OBJ_HISTORY] + [ARCH.AGENT_DEPTH_LATENT, ARCH.AGENT_POS_LATENT, ARCH.OBJ_OCC]
+        # cat_latents = [z_agent, h_agent, kypt_mean, z_agent_depth, obj_depth, ao_rel_pos, ao_rel_depth, 
+        #     obj_what, z_occ] # [B, T, *]
+
+        cat_latents = [z_agent, z_bgs, kypt_mean.clone().detach(), z_agent_depth.clone().detach(), 
+            obj_depth, obj_position, obj_what, z_occ] # [B, T, *]
 
         # latents_to_cat = [l for (m, l) in zip(cat_latents, latents) if m]     
         if len(z_masks.size()) == 4:
@@ -495,7 +557,7 @@ class GATSBIVanModel(TorchModelV2, nn.Module):
             return torch.cat(latents_to_cat, dim=-1)
 
     def get_indiv_features(self, z_masks, z_comps, z_objs, 
-            h_masks, h_comps, h_objs, action=None):
+            h_masks, h_comps, h_objs, aux=None, action=None):
         """
             Constructs feature for input to reward, decoder, actor and critic.
             inputs consist of posterior history and stochastic latents of the scene.        
@@ -504,15 +566,21 @@ class GATSBIVanModel(TorchModelV2, nn.Module):
         agent_idx = self.agent_slot_idx
         bg_indices = torch.tensor([k for k in range(ARCH.K) if k != agent_idx], device=z_masks.device).long()
 
+        kypt_mean, z_agent_depth, z_occ = aux['kypt_mean'], aux['agent_depth'], aux['z_occ']
         # process agent-obj depth and position
         obj_position = z_objs[..., ARCH.Z_PRES_DIM + ARCH.Z_DEPTH_DIM:ARCH.Z_PRES_DIM 
             + ARCH.Z_DEPTH_DIM + ARCH.Z_WHERE_DIM][..., 2:] # [B, (T), N, 2]
+        ao_rel_pos = kypt_mean - obj_position # [B, (T), N, 2]
         obj_depth =  z_objs[..., ARCH.Z_PRES_DIM:ARCH.Z_PRES_DIM + ARCH.Z_DEPTH_DIM] # [B, (T), N, 2]
         obj_depth = torch.sigmoid(-obj_depth)  
+        z_agent_depth = z_agent_depth[..., None, :]
+        ao_rel_depth = z_agent_depth - obj_depth # [B, (T), N, 1]
         # TODO (chmin): don't forget z_occ
 
         z_agent = z_masks[..., agent_idx, :] # [B, T, Z]
         z_bgs = z_masks[..., bg_indices, :]
+        h_agent = h_masks[..., agent_idx, :] # [B, T, H]
+        obj_pres = z_objs[..., :1] # [B, T, N, 1]
         obj_scale = z_objs[..., ARCH.Z_PRES_DIM + ARCH.Z_DEPTH_DIM:ARCH.Z_PRES_DIM 
                 + ARCH.Z_DEPTH_DIM + ARCH.Z_WHERE_DIM][..., :2]  # [B, T, N, 2]
         obj_what = z_objs[..., ARCH.Z_PRES_DIM + ARCH.Z_DEPTH_DIM + ARCH.Z_WHERE_DIM:ARCH.Z_PRES_DIM 
@@ -525,8 +593,8 @@ class GATSBIVanModel(TorchModelV2, nn.Module):
         for idx in range(ARCH.MAX):
             other_objs = list(obj_indices - {idx})
 
-            obj_wise_latents = [z_agent, z_bgs, 
-                obj_depth[..., idx, :], obj_position[..., idx, :], obj_what[..., idx, :],
+            obj_wise_latents = [z_agent, z_bgs, kypt_mean.clone().detach(), z_agent_depth.clone().detach(), 
+                obj_depth[..., idx, :], obj_position[..., idx, :], obj_what[..., idx, :], z_occ[..., idx][..., None],
                 obj_position[..., idx, :][..., None, :] - obj_position[..., other_objs, :]
             ]
             
@@ -582,6 +650,8 @@ class GATSBIVanModel(TorchModelV2, nn.Module):
         post_mix = state[:6] # z_masks, z_comps, h_masks, c_masks,  h_comps, c_comps
         post_obj = state[6:14] # z_objs, (where, what, ...). h_c_objs, ids
         action = state[-2] # [B, A]
+        prev_fg = state[-1] # [B, 3, 64, 64]
+        # TODO 211206 (chmin): scale the policy action output.
         action = scale_action(action)
         # posterior inference from RNN states.
         is_first_obs = not self.episodic_step or start_infer_flag 
@@ -591,24 +661,58 @@ class GATSBIVanModel(TorchModelV2, nn.Module):
 
         obs_diff = obs - mixture_out['bg'] # [1, 3, 64, 64]
         inpt = torch.cat([obs, obs_diff], dim=1) # channel-wise concat
-        # TODO (chmin): GATSBI vanilla do not infer the depth of the agent.
-        # TODO (chmin): In addition, keypoint inference is not necessary.
-        # kypt_out = self.keypoint_module.infer_keypoints(obs, mixture_out['enhanced_act'],
-        #     is_first=is_first_obs, global_step=self.global_step)
+        # set the first obs from 1st obs of an episode or right after 'prefill_steps' 
+        z_agent_depth_raw = mixture_out['agent_depth_raw'] # [B, T, 1] mixture_out['masks'][:, :, model.agent_slot_idx].float().reshape(-1, 1, 64, 64)
+        # mixture_out['masks'].reshape(-1, 1, 64, 64)
+        _, z_agent_depth = self.agent_depth.get_agent_depth_map(z_agent_depth = z_agent_depth_raw,
+            agent_mask=mixture_out['masks'][:, self.agent_slot_idx]) # [B, 1, H, W]
+
+        kypt_out = self.keypoint_module.infer_keypoints(obs, mixture_out['enhanced_act'],
+            is_first=is_first_obs, global_step=self.global_step)
+        # gaussian_heatmap = kypt_out['gaussian_maps'] # [1, 1, 64, 64]
+        # po single step posterior inference of objects
         obj_out = self.obj_module.infer(history=post_obj, obs=inpt, mix=mixture_out['bg'],
             discovery_dropout=ARCH.DISCOVERY_DROPOUT,
             z_agent=mixture_out['z_masks'][:, self.agent_slot_idx].detach(), # state of the agent.
             h_agent=mixture_out['h_mask_post'][self.agent_slot_idx].detach(), # history of the agent
             enhanced_act=mixture_out['enhanced_act'].detach(),
             first=is_first_obs,
+            fg=prev_fg,
+            agent_depth=z_agent_depth,
+            agent_kypt=kypt_out['obs_kypts'].detach(),
             episodic_step=self.episodic_step
             )
+
+        # TODO (chmin): debug here.
+        z_occ_mask = obj_out['z_occ'].squeeze(-1) # [B, N]
+
+        agent_kypt = kypt_out['obs_kypts'].detach()
+        _agent_kypt = agent_kypt.clone()
+        agent_kypt = torch.cat([_agent_kypt[..., 0][..., None], 
+                    - _agent_kypt[..., 1][..., None], _agent_kypt[..., -1][..., None]], dim=-1)
+
+        kypt_mean_pos = agent_kypt[..., :2]# [B, T, K, 2]
+        kypt_mean_weight = agent_kypt[..., -1][..., None] # [B, T, K, 1]
+        agent_kypt_mean = (kypt_mean_pos * kypt_mean_weight).sum(
+            1, keepdim=True) / kypt_mean_weight.sum(1, keepdim=True)
+        # TODO (chmin): debug here.
         
+        
+        # [B, 2], [B, 1], [B, N]
+        aux_info = {'kypt_mean': agent_kypt_mean.clone(), 'agent_depth': z_agent_depth.clone(),  'z_occ': z_occ_mask}
+
+        # In: z_masks - [1, K, 16], z_comps - [1, K, 32],
+        # z_objs length 5 list of object latents 
+
         # TODO (chmin): this feature goes for the high-level policy
         feat = self.get_feature_for_agent(
             mixture_out['z_masks'], mixture_out['z_comps'], torch.cat(obj_out['z_objs'], -1),
             mixture_out['h_mask_post'][None], mixture_out['h_comp_post'][None], obj_out['h_c_objs'][0],
-            action=action)
+            aux=aux_info, action=action)
+
+        # TODO (chmin): here comes the high-level action inference.
+        # high-level action selects yields object attention.
+        # it is trained via HRL objective with shorter horizon.
 
         # TODO (chmin): here comes the low-level action inference.
 
@@ -621,43 +725,39 @@ class GATSBIVanModel(TorchModelV2, nn.Module):
                 action[0, 0] = - action[0, 0] if torch.rand(1) > 0.25 else action[0, 0]
             logp = torch.zeros((1,), dtype=torch.float32)
         else:
-            if ARCH.AGENT_TYPE == 'model_based':
-                if self.episodic_step % ARCH.HIGH_LEVEL_HORIZON == 0:
-                    action_dist_high = self.actor_high(feat) # [B, N] -> N number of objects
-                    # sample by straight-through gradient.
-                    sub_policy_idx_inpt = action_dist_high.gsample() # in the form of [1, 0, ...]
-                    sub_policy_idx = torch.multinomial(sub_policy_idx_inpt, 1)[0].long() # subpolicy idx in number
-                    setattr(self, "sub_policy_idx", sub_policy_idx)
-                    setattr(self, "sub_policy_idx_inpt", sub_policy_idx_inpt)
+            if self.episodic_step % ARCH.HIGH_LEVEL_HORIZON == 0:
+                action_dist_high = self.actor_high(feat) # [B, N] -> N number of objects
+                # sample by straight-through gradient.
+                sub_policy_idx_inpt = action_dist_high.gsample() # in the form of [1, 0, ...]
+                sub_policy_idx = torch.multinomial(sub_policy_idx_inpt, 1)[0].long() # subpolicy idx in number
+                setattr(self, "sub_policy_idx", sub_policy_idx)
+                setattr(self, "sub_policy_idx_inpt", sub_policy_idx_inpt)
 
-                indiv_feats_list = self.get_indiv_features(
-                    mixture_out['z_masks'], mixture_out['z_comps'], torch.cat(obj_out['z_objs'], -1),
-                    mixture_out['h_mask_post'][None], mixture_out['h_comp_post'][None], obj_out['h_c_objs'][0],
-                    action=action)
+            indiv_feats_list = self.get_indiv_features(
+                mixture_out['z_masks'], mixture_out['z_comps'], torch.cat(obj_out['z_objs'], -1),
+                mixture_out['h_mask_post'][None], mixture_out['h_comp_post'][None], obj_out['h_c_objs'][0],
+                aux=aux_info, action=action)
 
-                # feature for low-level policy inferred by high-level actor.
-                # TODO (chmin): concat with this. 'sub_policy_idx_inpt'
-                low_level_feat = torch.cat([indiv_feats_list[self.sub_policy_idx], self.sub_policy_idx_inpt],dim=-1)
-                actor_low_dist = self.actor_low(low_level_feat)
-                if explore:
-                    action = actor_low_dist.sample()
-                else:
-                    action = actor_low_dist.mean
-                logp = actor_low_dist.log_prob(action)
-            elif ARCH.AGENT_TYPE == 'model_free': # model-free agent. Do not leverage latent dynamics.
-                raise ValueError("Model-free version of GATSBI is not supported yet!")
-
-
+            # feature for low-level policy inferred by high-level actor.
+            # TODO (chmin): concat with this. 'sub_policy_idx_inpt'
+            low_level_feat = torch.cat([indiv_feats_list[self.sub_policy_idx], self.sub_policy_idx_inpt],dim=-1)
+            actor_low_dist = self.actor_low(low_level_feat)
+            if explore:
+                action = actor_low_dist.sample()
+            else:
+                action = actor_low_dist.mean
+            logp = actor_low_dist.log_prob(action)
         # post_mix = state[:4] # z_masks, z_comps, h_masks, h_comps
         # post_obj = state[4:6] # z_objs, (where, what, ...). h_objs, ids
         # action = state[-1]
         self.state = [ mixture_out['z_masks'], mixture_out['z_comps'],
             mixture_out['h_mask_post'][None], mixture_out['c_mask_post'][None], mixture_out['h_comp_post'][None], 
             mixture_out['c_comp_post'][None], * obj_out['z_objs'], * obj_out['h_c_objs'], obj_out['ids']
-        ] + [action]
+        ] + [action, obj_out['fg']]
 
         self.episodic_step += 1 # episodic increment
         return action, logp, self.state
+
 
     def imagine_ahead(self, deter_states, sto_states, imagine_horizon, action, raw_action):
         """ Generate imagined frames given the RNN state of masks and comps.

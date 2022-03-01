@@ -265,8 +265,7 @@ class ObjModule(nn.Module):
 
 
     def infer(self, history, obs, mix, discovery_dropout, 
-            z_agent=None, h_agent=None, enhanced_act=None, first=False, fg=None,
-            agent_depth=None, agent_kypt=None, episodic_step=None):
+            z_agent=None, h_agent=None, enhanced_act=None, first=False, episodic_step=None):
         """
         Inference method of object module for the policy.
         length 8 list history contains:

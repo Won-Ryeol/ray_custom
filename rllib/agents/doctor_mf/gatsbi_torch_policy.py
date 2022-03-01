@@ -1254,6 +1254,10 @@ def action_sampler_fn(policy, model, input_dict, state, explore, timestep):
         state = model.get_initial_state() # this method is not problematic
         model.set_infer_flag(False)
     else:
+        # Weird RLLib Handling, this happens when env rests
+        # if len(state[0].size()) == 3: #! It seems suspicious, why stops @ 5002??
+        #     # Very hacky, but works on all envs
+        #     state = model.get_initial_state() #! it is not necessary
         if not model.start_infer_flag:
             model.set_infer_flag(True)
             state = model.get_initial_state()
@@ -1262,9 +1266,9 @@ def action_sampler_fn(policy, model, input_dict, state, explore, timestep):
         else:
             action, logp, state = model.policy(obs, state, explore,
                 start_infer_flag=False)
-        # we use entropy-based exploration instead.
         # action = td.Normal(action, policy.config["explore_noise"]).sample()
         # action = torch.clamp(action, min=-1.0, max=1.0)
+    # policy.global_timestep += policy.config["action_repeat"]
 
     return action, logp, state
 

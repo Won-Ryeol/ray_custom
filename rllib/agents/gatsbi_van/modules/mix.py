@@ -355,13 +355,7 @@ class MixtureModule(nn.Module):
         mode_enc = self.mode_enc(modes)
         mode_enc = mode_enc.flatten(start_dim=1)  # [B * K, D]
         bg_enc = self.mode_enc_fc(mode_enc).reshape(B, ARCH.K, -1)
-        bg_enc = bg_enc.detach()
         # # generate background recons.
-        # bg = (comps * masks).sum(dim=1)
-
-        # bg_enc = self.enc(bg)
-        # bg_enc = bg_enc.flatten(start_dim=1) # [B, D]
-        # bg_enc = self.enc_fc(bg_enc) # [B, 128]
 
         # update the temporal history state.
         # ! 3-1) temporal encode of z_mask & z_comp into h_post & h_prior -> update temporal latents along T-axis
@@ -416,8 +410,6 @@ class MixtureModule(nn.Module):
             'comps': comps,
             'masks': masks,
             'agent_depth_raw': agent_depth_raw,
-            # 'h_mask_prior': h_mask_t_prior, # ? should we parse the prior
-            # 'h_comp_prior': h_comp_t_prior,
             'h_mask_post': h_mask_t_post,
             'c_mask_post': c_mask_t_post,
             'h_comp_post': h_comp_t_post,
