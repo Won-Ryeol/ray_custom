@@ -17,8 +17,6 @@ from collections import defaultdict
 # for debugging
 from contextlib import nullcontext
 
-# TODO (chmin): clean up the imports.
-# TODO (chmin): vanilla gatsbi has no occlusion-related modules.
 from ray.rllib.agents.gatsbi_van.modules.arch import ARCH
 
 from IQA_pytorch import SSIM, MS_SSIM

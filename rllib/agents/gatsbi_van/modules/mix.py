@@ -6,8 +6,10 @@ from torch.distributions.normal import Normal
 from torch.distributions.kl import kl_divergence
 from .module import Flatten, MLP
 from torchvision.models import resnet18
-from gatsbi_rl.gatsbi.arch import ARCH
-from gatsbi_rl.gatsbi.utils import bcolors
+
+from ray.rllib.agents.gatsbi_van.modules.arch import ARCH
+from ray.rllib.agents.gatsbi_van.modules.utils import bcolors
+
 from contextlib import nullcontext
 
 class MixtureModule(nn.Module):
@@ -1320,7 +1322,7 @@ class MixtureModule(nn.Module):
             'bg' : bg, # [B*T, 3, 64, 64]
             'enhanced_act': action # [B*T, A]
         }
-        
+
         return things
 
 

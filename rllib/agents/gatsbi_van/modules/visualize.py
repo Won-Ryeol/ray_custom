@@ -12,9 +12,9 @@ from attrdict import AttrDict
 import matplotlib
 matplotlib.use('Agg')
 from matplotlib import pyplot as plt
-from gatsbi_rl.gatsbi.arch import ARCH
-from gatsbi_rl.gatsbi.vis_utils import draw_boxes, figure_to_numpy, make_gif
-from gatsbi_rl.gatsbi.utils import transform_tensors
+from ray.rllib.agents.gatsbi_van.modules.arch import ARCH
+from ray.rllib.agents.gatsbi_van.modules.vis_utils import draw_boxes, figure_to_numpy, make_gif
+from ray.rllib.agents.gatsbi_van.modules.utils import transform_tensors
 from torch.distributions import Normal
 
 def clean_log(log, num):
@@ -59,10 +59,6 @@ def  show_tracking_batch(model, obs, action, num):
     if isinstance(model, nn.DataParallel):
         model = model.module
     model.eval()
-    # imgs = obs[:, :ARCH.GENERATION_SEQ_LEN]
-    # action = action[:, :ARCH.GENERATION_SEQ_LEN]
-
-    # refer to track_agent method. 
     mixture_out = model.mixture_module.encode(
         seq=obs, action=action) # [B, T, 3, 64, 64],
 
@@ -71,19 +67,12 @@ def  show_tracking_batch(model, obs, action, num):
     inpt = torch.cat([obs, obs_diff], dim=2)
     kypt_out = model.keypoint_module.predict_keypoints(obs, mixture_out['enhanced_act'])
 
-    z_agent_depth_raw = mixture_out['agent_depth_raw'] # [B, T, 1] mixture_out['masks'][:, :, model.agent_slot_idx].float().reshape(-1, 1, 64, 64)
-
-    agent_depth_map, z_agent_depth = model.agent_depth.get_agent_depth_map(z_agent_depth =z_agent_depth_raw,
-        agent_mask=mixture_out['masks'][:, :, model.agent_slot_idx]) # [B, T, 1, H, W]
-
     obj_out = model.obj_module.track(obs=inpt, mix=mixture_out['bg'],
         discovery_dropout=ARCH.DISCOVERY_DROPOUT,
         z_agent=mixture_out['z_masks'][:, :, model.agent_slot_idx], # state of the agent
         h_agent=mixture_out['h_masks_post'][:, :, model.agent_slot_idx].detach(), # history of the agent
         enhanced_act=mixture_out['enhanced_act'].detach(),
-        agent_mask=mixture_out['masks'][:, :,model.agent_slot_idx].clone(),
-        agent_depth=z_agent_depth,
-        agent_kypt=kypt_out['obs_kypts'].detach() # TODO (chmin): detach or NOT?
+        agent_mask=mixture_out['masks'][:, :,model.agent_slot_idx].clone()
     )
 
     alpha_map = obj_out['alpha_map'] # [B, T, 1, H, W]
@@ -94,9 +83,6 @@ def  show_tracking_batch(model, obs, action, num):
     _importance_map = obj_out['_importance_map'] # [B, T, 1, H, W] (sum over N) obj_out['_importance_map'].reshape(-1, 1, 64, 64) (not normalized)
     ao_depth_map = torch.cat([agent_depth_map[:, :, None], _importance_map], dim=2) # [B, T, N + 1, H, W] 
     ao_depth_map = ao_depth_map / (torch.sum(ao_depth_map, dim=2, keepdim=True) + 1e-5) # it works as a weight matrix
-    # ao_depth_map
-    # importance_map = alpha_att_hat * torch.sigmoid(-z_depth[..., None, None])
-    # to reconstruct the observation (mixture_out['masks'][:, :, model.agent_slot_idx].reshape(-1, 1, 64, 64) > 0.2) * mixture_out['masks'][:, :, model.agent_slot_idx].reshape(-1, 1, 64, 64) 
 
     # learn agent depth map after certain steps of bg-fg training is done. recon.reshape(-1, 3, 64, 64)
     agent_y_att = (mixture_out['masks'][:, :, model.agent_slot_idx] * mixture_out['comps'][:, :,model.agent_slot_idx].clone().detach())
@@ -161,10 +147,6 @@ def show_episode(model, obs):
     #* reshape into (B, T, 3, H, W)
     gif = 3
 
-
-
-
-
 @torch.no_grad()
 def show_generation_batch(model, obs, action, num, cond_steps):
     """
@@ -190,14 +172,8 @@ def show_generation_batch(model, obs, action, num, cond_steps):
         agent_slot=model.agent_slot_idx
     )
        
-    # used for generating pseudo mask and bg regularization
     bg_indices = torch.tensor([k for k in range(ARCH.K) if k != model.agent_slot_idx], device=obs.device).long()
 
-    # if model.global_step < ARCH.PSEUDO_MASK_UNTIL and model.global_step >= ARCH.MODULE_TRAINING_SCHEME[1]:
-    # # generate pseudo agent observation (assume perfect mask and incomplete observation)
-    #     pseudo_bg = mixture_out['bg'] - mixture_out['masks'][:, :, model.agent_slot_idx] * mixture_out['comps'][:,
-    #          :, model.agent_slot_idx] + mixture_out['masks'][:, :, model.agent_slot_idx] * obs
-    #     obs_diff = obs - pseudo_bg mixture_out['bg'].reshape(-1, 3, 64, 64)
     obs_diff = obs - mixture_out['bg']
     inpt = torch.cat([obs, obs_diff], dim=2)
 
@@ -206,13 +182,6 @@ def show_generation_batch(model, obs, action, num, cond_steps):
         action = mixture_out['enhanced_act']
     else:
         action = mixture_out['enhanced_act'].detach()
-
-    kypt_out = model.keypoint_module.predict_keypoints(mixture_out['bg'], mixture_out['enhanced_act'])
-
-    z_agent_depth_raw = mixture_out['agent_depth_raw'] # [B, T, 1] mixture_out['masks'][:, :, model.agent_slot_idx].float().reshape(-1, 1, 64, 64)
-
-    agent_depth_map, z_agent_depth = model.agent_depth.get_agent_depth_map(z_agent_depth =z_agent_depth_raw,
-        agent_mask=mixture_out['masks'][:, :, model.agent_slot_idx]) # [B, T, 1, H, W]
 
     obj_out = model.obj_module.generate(obs=inpt, mix=mixture_out['bg'], cond_steps=cond_steps,
         sample=True, z_agent=mixture_out['z_masks'][:, :, model.agent_slot_idx],
@@ -226,18 +195,11 @@ def show_generation_batch(model, obs, action, num, cond_steps):
     _importance_map = obj_out['_importance_map'] # [B, T, 1, H, W] (sum over N) obj_out['_importance_map'].reshape(-1, 1, 64, 64) (not normalized)
     ao_depth_map = torch.cat([agent_depth_map[:, :, None], _importance_map], dim=2) # [B, T, N + 1, H, W] 
     ao_depth_map = ao_depth_map / (torch.sum(ao_depth_map, dim=2, keepdim=True) + 1e-5) # it works as a weight matrix
-    # ao_depth_map
-    # importance_map = alpha_att_hat * torch.sigmoid(-z_depth[..., None, None])
-    # to reconstruct the observation (mixture_out['masks'][:, :, model.agent_slot_idx].reshape(-1, 1, 64, 64) > 0.2) * mixture_out['masks'][:, :, model.agent_slot_idx].reshape(-1, 1, 64, 64) 
 
-    # learn agent depth map after certain steps of bg-fg training is done. recon.reshape(-1, 3, 64, 64)
     agent_y_att = (mixture_out['masks'][:, :, model.agent_slot_idx] * mixture_out['comps'][:, :,model.agent_slot_idx].clone().detach())
     ao_y_att = torch.cat([agent_y_att[:, :, None], obj_out['y_att']], dim=2) # [B, T, N+1, 3, 64, 64] ao_y_att.reshape(-1, 3, 64, 64)
     agent_obj = (ao_y_att * ao_depth_map).sum(dim=2) #[B, T, 3, 64, 64] agent_obj.reshape(-1, 3, 64, 64)
    
-    #? create ao_alpha_map
-    #? alpha_map = agent_y_att.reshape(-1, 3, 64, 64) #! Eq.(49) of supl.
-    #? agent_mask is the same as alpha_att_hat ao_alpha_map.reshape(-1, 1, 64, 64)
     ao_att_hat = torch.cat([mixture_out['masks'][:, :, model.agent_slot_idx][:, :, None], obj_out['alpha_att_hat']], dim=2) 
     ao_alpha_map = (ao_depth_map * ao_att_hat).sum(2)
 
@@ -277,64 +239,8 @@ def show_generation_batch(model, obs, action, num, cond_steps):
     add_boundary(gif[:, cond_steps:])
 
     # # (B, T, 3, num*H, N*W)
-    # gif = torch.cat(gifs, dim=-2)
-
     model.train()
     return grid, gif
-
-@torch.no_grad()
-def model_log_vis(writer:SummaryWriter, log, global_step):
-    """
-    Show whether return in log
-    """
-
-    log = clean_log(log, 10)
-
-    B, T, *_ = log.imgs.size()
-    if ARCH.ACTION_COND == 'track_bg_only':
-        grid = make_gswm_grid(
-            log.imgs, log.recon, None, None, None, None, None, None
-        )
-    else:
-        grid = make_gswm_grid(
-            log.imgs, log.recon, log.fg, log.bg, log.z_where, log.z_pres, log.proposal, log.ids
-        )
-
-
-    writer.add_image('train/grid', grid, global_step)
-    writer.add_scalar('train/loss', log.loss.mean(), global_step)
-    writer.add_scalar('train/elbo', log.elbo.mean(), global_step)
-    writer.add_scalar('train/mse', log.mse.mean(), global_step)
-    writer.add_scalar('train/loglikelihood', log.loglikelihood.mean(), global_step)
-    writer.add_scalar('train/kl', log.kl.mean(), global_step)
-    if ARCH.ACTION_COND != 'track_bg_only':
-        writer.add_scalar('train/kl_fg', log.kl_fg.mean(), global_step)
-        writer.add_scalar('train/kl_pres', log.kl_pres.mean(), global_step)
-        writer.add_scalar('train/kl_depth', log.kl_depth.mean(), global_step)
-        writer.add_scalar('train/kl_where', log.kl_where.mean(), global_step)
-        writer.add_scalar('train/kl_what', log.kl_what.mean(), global_step)
-        writer.add_scalar('train/kl_dyna', log.kl_dyna.mean(), global_step)
-        writer.add_scalar('train/hnn_loss', log.hnn_loss.mean(), global_step)
-        writer.add_scalar('train/mmt_loss', log.mmt_loss.mean(), global_step)
-        writer.add_scalar('train/kypt_recon_loss', log.kypt_recon_loss.mean(), global_step)
-        writer.add_scalar('train/kypt_sep_loss', log.kypt_sep_loss.mean(), global_step)
-        writer.add_scalar('train/kypt_coord_pres_loss', log.kypt_coord_pred_loss.mean(), global_step)
-        writer.add_scalar('train/kypt_kl_loss', log.kypt_kl_loss.mean(), global_step)
-        writer.add_scalar('train/kypt_reg_loss', log.kypt_reg_loss.mean(), global_step)
-        writer.add_scalar('train/alpha_mean', log.alpha_mean.mean(), global_step)
-        writer.add_scalar('train/bg_reg_loss', log.bg_reg_loss.sum(-1).mean(), global_step)
-        writer.add_scalar('train/robot_embed_loss', log.robot_embed_loss.sum(-1).mean(), global_step)
-        if ARCH.BG_UPDATE == 'residual':
-            writer.add_scalar('train/mask_res_norm', log.mask_res_norm.mean(), global_step)
-            writer.add_scalar('train/comp_res_norm', log.comp_res_norm.mean(), global_step)
-            writer.add_scalar('train/kl_mask_y0', log.kl_mask_y0.mean(), global_step)
-            writer.add_scalar('train/kl_comp_y0', log.kl_comp_y0.mean(), global_step)
-        count = 0
-        for t in log.z_pres:
-            count += t.sum()
-        count /= (B * T)
-        writer.add_scalar('train/count', count, global_step)
-    writer.add_scalar('train/kl_bg', log.kl_bg.mean(), global_step)
 
 def make_gswm_grid(
         imgs,

@@ -1,7 +1,7 @@
 import numpy as np
 import torch
-from gatsbi_rl.gatsbi.arch import ARCH
-from gatsbi_rl.gatsbi.utils import spatial_transform
+from ray.rllib.agents.gatsbi_van.modules.arch import ARCH
+from ray.rllib.agents.gatsbi_van.modules.utils import spatial_transform
 
 # https://www.rapidtables.com/web/color/RGB_Color.html
 # (N, 3)
