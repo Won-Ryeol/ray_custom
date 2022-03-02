@@ -18,7 +18,7 @@ torch, nn = try_import_torch()
 from torch import distributions as td
 # from gatsbi_rl.rllib_agent.utils import Linear, TanhBijector
 from .utils import Linear, TanhBijector, scale_action
-from ray.rllib.agents.gatsbi_van.utils import Linear, TanhBijector, bcolors
+from ray.rllib.agents.gatsbi_van.utils import Linear, TanhBijector
 # GATSBI model related modules.
 
 # import GATSBI vanilla related submodules.
@@ -28,6 +28,7 @@ from ray.rllib.agents.gatsbi_van.modules.arch import ARCH
 from ray.rllib.agents.gatsbi_van.modules.mix import MixtureModule
 from ray.rllib.agents.gatsbi_van.modules.obj import ObjModule
 from ray.rllib.agents.gatsbi_van.modules.keypoint import KeypointModule
+from ray.rllib.agents.gatsbi_van.modules.utils import bcolors
 
 from .utils import scale_action
 # import visualizer of training GATSBI.
@@ -770,16 +771,14 @@ class GATSBIVanModel(TorchModelV2, nn.Module):
                 h_agent=mixture_out['h_mask_prior'][:, self.agent_slot_idx].detach(),
                 enhanced_act=mixture_out['enhanced_act'].detach(), sample=True
                 )
-            z_occ_mask = obj_out['z_occ'].squeeze(-1) # [B, N]
 
             deter_states = (mixture_out['h_mask_prior'], mixture_out['c_mask_prior'], mixture_out['h_comp_prior'],
-                mixture_out['c_comp_prior'], obj_out['h_c_objs'][0], obj_out['h_c_objs'][1],
-                agent_kypt_mean
+                mixture_out['c_comp_prior'], obj_out['h_c_objs'][0], obj_out['h_c_objs'][1]
             )
 
             sto_states = (mixture_out['z_masks'], mixture_out['z_comps'], obj_out['z_objs'],
-                obj_out['ids'], obj_out['proposal'], z_occ_mask, z_agent_depth
-            )
+                obj_out['ids'], obj_out['proposal'])
+
             del mixture_out
             del obj_out
 

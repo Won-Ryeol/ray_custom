@@ -1,30 +1,26 @@
 import enum
-from gatsbi_rl.gatsbi.keypoint import KyptDynaNet
 import itertools
 import logging
 
 from ray.rllib.policy.torch_policy_template import build_torch_policy
-# from ray.rllib.agents.a3c.a3c_torch_policy import apply_grad_clipping
 from ray.rllib.utils.framework import try_import_torch
 from ray.rllib.models.catalog import MODEL_DEFAULTS, ModelCatalog
-from gatsbi_rl.rllib_agent.gatsbi_model import RewardDecoder
-from gatsbi_rl.rllib_agent.utils import FreezeParameters
-from gatsbi_rl.gatsbi.arch import ARCH
-from gatsbi_rl.gatsbi.visualize import * # import all function
-from gatsbi_rl.gatsbi.utils import bcolors
-from gatsbi_rl.gatsbi.module import anneal
-from gatsbi_rl.gatsbi.median_pool import MedianPool2d
-from gatsbi_rl.gatsbi.utils import spatial_transform
-# from gatsbi_rl.gatsbi.obj import select
+from ray.rllib.agents.gatsbi_van.gatsbi_model import RewardDecoder
+from ray.rllib.agents.gatsbi_van.utils import FreezeParameters
+from ray.rllib.agents.gatsbi_van.modules.arch import ARCH
+from ray.rllib.agents.gatsbi_van.modules.visualize import *
+from ray.rllib.agents.gatsbi_van.modules.utils import bcolors
+from ray.rllib.agents.gatsbi_van.modules.utils import spatial_transform
+from ray.rllib.agents.gatsbi_van.modules.module import anneal
+from ray.rllib.agents.gatsbi_van.modules.median_pool import MedianPool2d
+from ray.rllib.agents.gatsbi_van.modules.arcmargin import ArcMarginProduct
+
 import torchvision
 import os
 FIG_DIR = os.path.expanduser("~/rss22figs/")
 
 # TODO (chmin): arc margin loss for metric learning
-from gatsbi_rl.gatsbi.arcmargin import ArcMarginProduct
-
 from torch.distributions.kl import kl_divergence
-import gatsbi_rl
 import random
 import os
 import numpy as np
@@ -52,8 +48,6 @@ from torch.distributions import Normal
 
 ## policy entropy scheduling.
 
-
-
 class ModelLearningRateSchedule:
     """Mixin for TFPolicy that adds a learning rate schedule."""
 
@@ -67,13 +61,6 @@ class ModelLearningRateSchedule:
                 lr_schedule, outside_value=lr_schedule[-1][-1], framework=None)
 
         self.init_optimizers = self._optimizers
-
-
-
-        # self.init_actor_params = self._optimizers[1].param_groups[0]["params"]
-        # self.init_actor_state_dict = self._optimizers[1].state_dict()
-        # self.init_critic_params = self._optimizers[2].param_groups[0]["params"]
-        # self.init_critic_state_dict = self._optimizers[2].state_dict()
 
     @override(Policy)
     def on_global_var_update(self, global_vars):
@@ -151,9 +138,6 @@ def select(kypt_intensity, kypts):
     kypts = transform_tensors(kypts, func=lambda x: gather(x, indices))
     # return the sorted latents w.r.t. z_{pres}
     return kypts
-
-
-
 
 def random_crop(seq, T):
     """
@@ -608,6 +592,7 @@ def compute_gatsbi_van_loss(obs,
                 _low_level_val_list = []
                 _low_level_val_list_critic = [] # val feat to compute critic loss
                 _low_level_val_targ_list = []
+
                 for batch_idx in range(reward.size(1)):
                     sub_policy_idx = sub_policy_ind[temp_idx][batch_idx]
                     low_feat = indiv_latent_lists[sub_policy_idx][temp_idx][batch_idx]
@@ -654,9 +639,10 @@ def compute_gatsbi_van_loss(obs,
             # predict target value with slow value. do not require gradient.
             target_value1_high = model.value_targ1_high(imag_feat_high).mean # [H // X, B*T]
             target_value2_high = model.value_targ2_high(imag_feat_high).mean # [H // X, B*T]
+
             # take minimum of the two target values. (TD3 style)
             target_value_high = torch.min(target_value1_high, target_value2_high)
-            # target_value_low = model.value_targ_low(imag_feat).mean # [H, B*T]
+
             # crop out the first element of sequence.
             target_returns_high = lambda_return(reward=high_level_reward[:-1], value=target_value_high[:-1], 
                 pcont=pcont_high[:-1], bootstrap=target_value_high[-1], lambda_=lambda_) # [H-1 // X, B*T]
@@ -737,8 +723,6 @@ def compute_gatsbi_van_loss(obs,
         ent_scale = entropy_schedule(model.global_step)
         actor_entropy_loss = - ent_scale * policy_entropy.mean() - ent_scale * low_actor_entropy.mean() # maximize
         actor_loss = actor_loss + actor_entropy_loss
-        # add policy entropy loss.
-        # ent_scale = common.schedule(self.config.actor_ent, self.tfstep)
 
         # Critic Loss
         with torch.no_grad():
@@ -777,11 +761,6 @@ def compute_gatsbi_van_loss(obs,
 
         critic_low_loss = - (val_low_discount * val_low_pred.log_prob(target_low)).mean()
         critic_loss = critic_high_loss + critic_low_loss
-
-        # * 2) train low-level actor critics
-        # TODO (chmin): add actor crtiic learning for intrinsic reward 
-        # intrinsic reward for each low level agent -> agent kypt-mean andf obj distance.
-        # this doesn't have to be backpropagated though.
 
         if torch.rand(1) > 0.95:
             print(f"Actor loss is {actor_loss_log.mean()} and Critic loss is {critic_loss.mean()}")
@@ -880,7 +859,7 @@ def lambda_return(reward, value, pcont, bootstrap, lambda_):
     returns = torch.stack(returns, dim=0)
     return returns
 
-def gatsbi_loss(policy, model, dist_class, train_batch):
+def gatsbi_van_loss(policy, model, dist_class, train_batch):
     log_gif = False
     if "log_gif" in train_batch:
         log_gif = True
@@ -907,14 +886,14 @@ def gatsbi_loss(policy, model, dist_class, train_batch):
 
     return (loss_dict["model_loss"], loss_dict["actor_loss"], loss_dict["critic_loss"])
 
-def build_gatsbi_model(policy, obs_space, action_space, config):
+def build_gatsbi_van_model(policy, obs_space, action_space, config):
 
     policy.model = ModelCatalog.get_model_v2(
         obs_space,
         action_space,
         1,
-        config["gatsbi_model"],
-        name="GATSBIModel",
+        config["gatsbivan_model"],
+        name="GATSBIVanModel",
         framework="torch")
 
     policy.model_variables = policy.model.variables()
@@ -953,11 +932,11 @@ def action_sampler_fn(policy, model, input_dict, state, explore, timestep):
     return action, logp, state
 
 
-def gatsbi_stats(policy, train_batch):
+def gatsbi_van_stats(policy, train_batch):
     return policy.stats_dict
 
 
-def gatsbi_optimizer_fn(policy, config):
+def gatsbi_van_optimizer_fn(policy, config):
     model = policy.model
 
     mix_weights = list(model.mixture_module.parameters())
@@ -1008,10 +987,10 @@ GATSBIVanTorchPolicy = build_torch_policy(
     name="GATSBIVanTorchPolicy",
     get_default_config=lambda: ray.rllib.agents.gatsbi_van.DEFAULT_CONFIG,
     action_sampler_fn=action_sampler_fn,
-    loss_fn=gatsbi_loss,
-    stats_fn=gatsbi_stats,
-    make_model=build_gatsbi_model,
-    optimizer_fn=gatsbi_optimizer_fn,
+    loss_fn=gatsbi_van_loss,
+    stats_fn=gatsbi_van_stats,
+    make_model=build_gatsbi_van_model,
+    optimizer_fn=gatsbi_van_optimizer_fn,
     extra_grad_process_fn=apply_grad_clipping,
     # before_init=setup_early_mixins,
     before_loss_init=before_loss_init, #* https://github.com/ray-project/ray/issues/15554

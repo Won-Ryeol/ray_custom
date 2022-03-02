@@ -292,13 +292,6 @@ class ObjModule(nn.Module):
         if first:
             self.start_id = torch.zeros(B, device=obs.device).long()
 
-            # TODO (chmin): deprecated.
-            # _agent_kypt = agent_kypt.clone()
-            # agent_kypt_first = torch.cat([_agent_kypt[..., 0][..., None], 
-            #     - _agent_kypt[..., 1][..., None], _agent_kypt[..., -1][..., None]], dim=-1)
-
-            # setattr(self, "agent_kypt_prev", agent_kypt_first.clone().detach())
-
         x = obs # [B, 3, H, W]
         # Update object states: propagate from prev step to current step
         state_post_prop, state_prior_prop, z_prop, _, proposal = self.propagate( 
@@ -314,7 +307,7 @@ class ObjModule(nn.Module):
             z_occ_disc = torch.zeros(B, ARCH.MAX, 1).to(obs.device)
             
         # Combine discovered and propagated things, and sort by p(z_pres)
-        state_post, state_prior, z, ids, proposal, z_occ_combined = self.combine(
+        state_post, state_prior, z, ids, proposal = self.combine(
             state_post_disc, state_prior_disc, z_disc, ids_disc, z_disc[2],
             state_post_prop, state_prior_prop, z_prop, ids_prop, proposal,
         )
@@ -398,14 +391,13 @@ class ObjModule(nn.Module):
                     state_post_disc, state_prior_disc, z_disc, ids_disc = self.get_dummy_things(B, obs.device)
                     kl_disc = (0.0, 0.0, 0.0, 0.0, 0.0)
                 # Combine discovered and propagated things, and sort by p(z_pres)
-                # TODO (chmin): thresholding is necessary; should be no grad
                 # reject the agent being discovered.
                 if (not z_disc[0].size(1) == 0 and self.global_step >= ARCH.REJECT_ALPHA_START 
                     and self.global_step < ARCH.REJECT_ALPHA_UNTIL):
                     # do discovery
                     z_disc = self.reject_by_render(agent_mask[:, t], z_disc)
 
-                state_post, state_prior, z, ids, proposal, z_occ_combined = self.combine(
+                state_post, state_prior, z, ids, proposal = self.combine(
                     state_post_disc, state_prior_disc, z_disc, ids_disc, z_disc[2], 
                     state_post_prop, state_prior_prop, z_prop, ids_prop, proposal
                 )
@@ -522,8 +514,8 @@ class ObjModule(nn.Module):
         else:
             return [sampled_latent[0], sampled_keypoints[0]]
 
-    def generate(self, obs, mix, cond_steps, sample=True, z_agent=None, h_agent=None, enhanced_act=None, agent_mask=None,
-        agent_depth=None, agent_kypt=None):
+    def generate(self, obs, mix, cond_steps, sample=True, z_agent=None, h_agent=None, 
+        enhanced_act=None, agent_mask=None):
         """
         Generate new frames, given a set of input frames
         Args:
@@ -531,7 +523,6 @@ class ObjModule(nn.Module):
             bg: (B, T, 3, H, W), generated bg images
             cond_steps: number of input steps
             sample: bool, sample or take mean
-
         Returns:
             log
         """
@@ -543,34 +534,24 @@ class ObjModule(nn.Module):
         things = defaultdict(list)
         first = False
 
-        _agent_kypt_first = agent_kypt[:, 0].clone()
-        agent_kypt_first = torch.cat([_agent_kypt_first[..., 0][..., None], 
-            - _agent_kypt_first[..., 1][..., None], _agent_kypt_first[..., -1][..., None]], dim=-1)
-        setattr(self, "agent_kypt_prev", agent_kypt_first.clone().detach())
-
-        fg = torch.zeros(B, 3, H, W, device=obs.device)
         for t in range(T):
             z_agent_t = z_agent[:, t]
             h_agent_t = h_agent[:, t]
             enhanced_act_t = enhanced_act[:, t]
 
             if t < cond_steps: # inference
-                
                 if t == 0:
                     first = True
                 # Input, use posterior
                 x = obs[:, t]
                 # state_post and state_prior are the RNN states.
-                state_post_prop, state_prior_prop, z_prop, kl_prop, proposal, z_occ, *_, proposal_scale_update \
-                = self.propagate(x, fg, state_post,
-                    state_prior, z, mix[:, t], z_agent_t, h_agent_t, enhanced_act_t, 
-                    first=first, agent_depth=agent_depth[:, t], agent_kypt=agent_kypt[:, t])
+                state_post_prop, state_prior_prop, z_prop, kl_prop, proposal = self.propagate(
+                    x, state_post, state_prior, z, mix[:, t], z_agent_t, h_agent_t, 
+                    enhanced_act_t, first=first)
                 ids_prop = ids
                 if t < 5:
-                    state_post_disc, state_prior_disc, z_disc, ids_disc, kl_disc, _, _, z_occ_disc \
-                     = self.discover(x, z_prop, mix[:, t], 
-                        start_id, z_agent_t, h_agent_t, enhanced_act_t, agent_depth=agent_depth[:, t], 
-                        agent_kypt=agent_kypt[:, t], z_occ_prop=z_occ, proposal_scale_update=proposal_scale_update)
+                    state_post_disc, state_prior_disc, z_disc, ids_disc, kl_disc, _, _ \
+                     = self.discover(x, z_prop, mix[:, t], start_id, z_agent_t, h_agent_t, enhanced_act_t)
                 else:
                     state_post_disc, state_prior_disc, z_disc, ids_disc = self.get_dummy_things(B, obs.device)
             
@@ -580,19 +561,16 @@ class ObjModule(nn.Module):
                     z_disc = self.reject_by_render(agent_mask[:, t], z_disc)
             else:
                 # Generation, use prior
-                state_prior_prop, z_prop, z_occ = self.propagate_gen(state_prior, z, mix[:, t], sample, z_agent_t, 
-                                    h_agent_t, enhanced_act_t, agent_depth=agent_depth[:, t], agent_kypt=agent_kypt[:, t])
+                state_prior_prop, z_prop = self.propagate_gen(state_prior, z, mix[:, t], sample, z_agent_t, 
+                    h_agent_t, enhanced_act_t)
                 state_post_prop = state_prior_prop
                 ids_prop = ids
                 state_post_disc, state_prior_disc, z_disc, ids_disc = self.get_dummy_things(B, obs.device)
 
-            state_post, state_prior, z, ids, proposal, z_occ_combined = self.combine(
-                state_post_disc, state_prior_disc, z_disc, ids_disc, z_disc[2], z_occ_disc,
-                state_post_prop, state_prior_prop, z_prop, ids_prop, proposal, z_occ
+            state_post, state_prior, z, ids, proposal = self.combine(
+                state_post_disc, state_prior_disc, z_disc, ids_disc, z_disc[2]
+                state_post_prop, state_prior_prop, z_prop, ids_prop, proposal
             )
-
-            # TODO (chmin): we should track z_occ.
-            setattr(self, "z_occ_prev", z_occ_combined.clone().detach())
 
             with torch.no_grad():
                 fg, alpha_map, _importance_map, y_att, alpha_att_hat = self.render(z)
@@ -615,13 +593,12 @@ class ObjModule(nn.Module):
         things = {k: torch.stack(v, dim=1) for k, v in things.items()}
         return things
 
-    def imagine(self, mix, history, z_prop, z_agent=None, h_agent=None,
-            enhanced_act=None, sample=True, agent_depth=None, agent_kypt=None):
+    def imagine(self, mix, history, z_prop, z_agent=None, h_agent=None, enhanced_act=None, sample=True):
         """
-        Generate new frames given a set of input frames. NOTE that this is 
-        prior samples, but the gradient should flow to train actor-critic.
-        It requires conditional frame (posterior from the dataset.)
-        NOTE: refer to generate() method of GATSBI, after the cond_steps
+            Generate new frames given a set of input frames. NOTE that this is 
+            prior samples, but the gradient should flow to train actor-critic.
+            It requires conditional frame (posterior from the dataset.)
+            NOTE: refer to generate() method of GATSBI, after the cond_steps
         """
         state_prior = history
         B = state_prior[0].size(0) # B -> batch * time_seq
@@ -629,26 +606,20 @@ class ObjModule(nn.Module):
 
         things = defaultdict(list)
         # we only use prior temporal states here.
-        # TODO (chmin): proposal should also be propagated
-        # TODO (chmin): verify this
-        state_prior_prop, z_prop, z_occ = self.propagate_gen( # sample determines deter/stoch samplingu
+
+        state_prior_prop, z_prop = self.propagate_gen( # sample determines deter/stoch sampling
             state_prev=state_prior, z_prev=z, bg=mix, sample=sample,
-            z_agent=z_agent, h_agent=h_agent, enhanced_act=enhanced_act, agent_depth=agent_depth,
-            agent_kypt=agent_kypt)
+            z_agent=z_agent, h_agent=h_agent, enhanced_act=enhanced_act)
         
         ids_prop = ids # make sure it's long tensor
         state_post_disc, state_prior_disc, z_disc, ids_disc = self.get_dummy_things(B, mix.device)
         state_post_prop = state_prior_prop
 
-        z_occ_disc = torch.zeros(B, ARCH.MAX, 1).to(mix.device)
-
-        state_post, state_prior, z, ids, proposal, z_occ_combined = self.combine(
-            state_post_disc, state_prior_disc, z_disc, ids_disc, z_disc[2], z_occ_disc,
-            state_post_prop, state_prior_prop, z_prop, ids_prop, proposal, z_occ
+        state_post, state_prior, z, ids, proposal = self.combine(
+            state_post_disc, state_prior_disc, z_disc, ids_disc, z_disc[2]
+            state_post_prop, state_prior_prop, z_prop, ids_prop, proposal
         )
-        # with torch.no_grad(): # TODO (chmin): this return should be the same as track().
-        #     fg, alpha_map, *_ = self.render(z) # [B*T, 3, 64, 64], [B*T, 1, 64, 64]
-        start_id = ids.max(dim=1)[0] + 1 #! increase the starting ID if new objects are found.
+        start_id = ids.max(dim=1)[0] + 1 
         things = dict(
             z_pres=z[0], # [B*T, N, 1]
             z_depth=z[1], # [B*T, N, 1]
@@ -659,9 +630,6 @@ class ObjModule(nn.Module):
             ids=ids, # [B*T, N]
             proposal=proposal, # [B*T, N, 4]
             h_c_objs=state_prior, # tuple of LSTM states
-            # fg=fg,
-            # alpha_map=alpha_map,
-            z_occ=z_occ_combined
         )
         return things
 
@@ -785,8 +753,8 @@ class ObjModule(nn.Module):
 
         return state_post, state_prior, z, ids, kl, prop_map, x_enc
 
-    def propagate_gen(self, state_prev, z_prev, bg, sample=False, z_agent=None, h_agent=None, enhanced_act=None,
-        agent_depth=None, agent_kypt=None):
+    def propagate_gen(self, state_prev, z_prev, bg, sample=False, z_agent=None, 
+            h_agent=None, enhanced_act=None):
         """
         One step of propagation generation
         Args:
@@ -814,40 +782,11 @@ class ObjModule(nn.Module):
         z_dyna = z_dyna_prior.rsample() if sample else z_dyna_loc
 
         # All (B, N, D)
-
-        _agent_kypt = agent_kypt.clone()
-
-        agent_kypt = torch.cat([_agent_kypt[..., 0][..., None], 
-            - _agent_kypt[..., 1][..., None], _agent_kypt[..., -1][..., None]], dim=-1)
-
-        kypt_pos = agent_kypt[..., :2] # [B, K, 2]
-        # agent_kypt_mean = torch.mean(kypt_pos, dim=1, keepdim=True) # [B, 1, 2] mean position of agent keypoints.
-        kypt_weight = agent_kypt[...,-1][..., None] # [B, K, 1]
-        agent_kypt_mean = (kypt_pos * kypt_weight).sum(1, keepdim=True) / kypt_weight.sum(1, keepdim=True)
-        
         obj_pos = z_where_prev[..., 2:] # [B, N, 2] 
 
-        z_agent_depth = agent_depth[:, None] # [B, 1, 1]
-
-        # TODO (chmin): make sure that z_depth be normalized.
-        obj_to_agent_depth = z_agent_depth - torch.sigmoid(-z_depth_prev) # [B, N, 1]
-        obj_to_agent_where = agent_kypt_mean - obj_pos # [B, N, 2] positional vector from agent to each object.
-
-        kypt_embeds = self.occlu_policy.uncertain_attention.embed(kypt_pos)
-        obj_embeds = self.occlu_policy.uncertain_attention.embed(obj_pos)
-
-        z_occ, _ = self.occlu_policy.z_occ_prior(
-            agent_kypt_embedding=kypt_embeds,
-            obj_embedding=obj_embeds,
-            obj_to_agent_depth=obj_to_agent_depth,
-            obj_to_agent_where=obj_to_agent_where,
-            enhanced_act=enhanced_act
-            )
-
         (z_pres_prob, z_depth_offset_loc, z_depth_offset_scale, z_where_offset_loc, z_where_offset_scale,
-         z_what_offset_loc,
-         z_what_offset_scale, z_depth_gate, z_where_gate, z_what_gate, z_where_gate_raw) = self.pres_depth_where_what_prior(
-             z_dyna, z_occ=z_occ)
+         z_what_offset_loc, z_what_offset_scale, z_depth_gate, z_where_gate, z_what_gate, 
+            z_where_gate_raw) = self.pres_depth_where_what_prior(z_dyna)
 
         # Always set them to one during generation
         z_pres_prior = RelaxedBernoulli(temperature=self.tau, probs=z_pres_prob)
@@ -855,49 +794,24 @@ class ObjModule(nn.Module):
         z_pres = (z_pres > 0.5).float()
         z_pres = torch.ones_like(z_pres)
         z_pres = z_pres_prev #* z_pres
-        # z_pres = z_pres_prev * z_pres * (1. - z_occ) + z_pres_prev * z_occ   # -> refer to Sec 2.5 of PRML
 
         z_where_prior = Normal(z_where_offset_loc, z_where_offset_scale)
         z_where_offset = z_where_prior.rsample() if sample else z_where_offset_loc
         z_where = torch.zeros_like(z_where_prev)
 
-        uncertain_pos, uncertain_gate_raw, _ = self.occlu_policy.sample_object(
-            agent_kypt=agent_kypt, proposal=z_where_prev, enhanced_act=enhanced_act, z_occ=z_occ,
-            z_agent=z_agent, h_agent=h_agent, agent_kypt_prev=self.agent_kypt_prev)
-        uncertain_pos = ARCH.Z_SHIFT_UPDATE_SCALE * torch.tanh(uncertain_pos) 
-        uncertain_gate = torch.sigmoid(uncertain_gate_raw)
+        z_where[..., :2] = z_where_prev[..., :2] + ARCH.Z_SCALE_UPDATE_SCALE * z_where_gate[..., :2] * torch.tanh(
+        z_where_offset[..., :2]) 
+        # Shift
+        z_where[..., 2:] = z_where_prev[..., 2:] + ARCH.Z_SHIFT_UPDATE_SCALE * z_where_gate[..., 2:] * torch.tanh(
+            z_where_offset[..., 2:])
 
-        setattr(self, "agent_kypt_prev", agent_kypt.clone().detach())
+        z_depth_prior = Normal(z_depth_offset_loc, z_depth_offset_scale)
+        z_depth_offset = z_depth_prior.rsample()
+        z_depth = z_depth_prev + ARCH.Z_DEPTH_UPDATE_SCALE * z_depth_gate * z_depth_offset # [B, D, 1]
 
-        if self.global_step >= ARCH.REJECT_ALPHA_UNTIL:
-            z_where[..., :2] = z_where_prev[..., :2] + (1. - z_occ) * ARCH.Z_SCALE_UPDATE_SCALE * z_where_gate[..., :2] * torch.tanh(
-                z_where_offset[..., :2])
-
-            # shift
-            z_where[..., 2:] = z_where_prev[..., 2:] + (1. - z_occ) * ARCH.Z_SHIFT_UPDATE_SCALE * z_where_gate[..., 2:] * torch.tanh(
-                z_where_offset[..., 2:]) + z_occ * uncertain_gate * uncertain_pos
-
-            z_depth_prior = Normal(z_depth_offset_loc, z_depth_offset_scale)
-            z_depth_offset = z_depth_prior.rsample() if sample else z_depth_offset_loc
-            z_depth = z_depth_prev + (1. - z_occ) * ARCH.Z_DEPTH_UPDATE_SCALE * z_depth_gate * z_depth_offset
-
-            z_what_prior = Normal(z_what_offset_loc, z_what_offset_scale)
-            z_what_offset = z_what_prior.rsample() if sample else z_what_offset_loc
-            z_what = z_what_prev + (1. - z_occ) * ARCH.Z_WHAT_UPDATE_SCALE * z_what_gate * torch.tanh(z_what_offset)
-        else:
-            z_where[..., :2] = z_where_prev[..., :2] + ARCH.Z_SCALE_UPDATE_SCALE * z_where_gate[..., :2] * torch.tanh(
-            z_where_offset[..., :2]) #! Eq.(27) of supl.
-            # Shift
-            z_where[..., 2:] = z_where_prev[..., 2:] + ARCH.Z_SHIFT_UPDATE_SCALE * z_where_gate[..., 2:] * torch.tanh(
-                z_where_offset[..., 2:])
-
-            z_depth_prior = Normal(z_depth_offset_loc, z_depth_offset_scale)
-            z_depth_offset = z_depth_prior.rsample()  #! Eq.(15) of supl.
-            z_depth = z_depth_prev + ARCH.Z_DEPTH_UPDATE_SCALE * z_depth_gate * z_depth_offset # [B, D, 1]
-
-            z_what_prior = Normal(z_what_offset_loc, z_what_offset_scale)
-            z_what_offset = z_what_prior.rsample()  #! Eq.(17) of supl.
-            z_what = z_what_prev + ARCH.Z_WHAT_UPDATE_SCALE * z_what_gate * torch.tanh(z_what_offset) # [B, D, 64]
+        z_what_prior = Normal(z_what_offset_loc, z_what_offset_scale)
+        z_what_offset = z_what_prior.rsample()
+        z_what = z_what_prev + ARCH.Z_WHAT_UPDATE_SCALE * z_what_gate * torch.tanh(z_what_offset) # [B, D, 64]
 
         z = (z_pres, z_depth, z_where, z_what, z_dyna)
 
@@ -1068,8 +982,7 @@ class ObjModule(nn.Module):
         # get the latents (pres, depth, where, what, dyna) from propagation
         z_pres_prop, z_depth_prop, z_where_prop, z_what_prop, z_dyna_prop = z_prop # N is the number of propagated objects
         z_pres_prop = z_pres_prop.detach()
-        # if len(z_prop) == 4:
-        #     z_pre
+
         B, N, _ = z_pres_prop.size()
         # TODO (chmin): figure out how to return
         if z_pres_prop.size(1) == 0: # No object is propagated
