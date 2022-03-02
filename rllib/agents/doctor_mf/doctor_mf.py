@@ -5,7 +5,11 @@ import numpy as np
 import torch
 
 from ray.rllib.agents import with_common_config
-from gatsbi_rl.rllib_agent.gatsbi_torch_policy import GATSBITorchPolicy
+from ray.rllib.agents.gatsbi_van.gatsbi_van_torch_policy import GATSBIVanTorchPolicy
+from ray.rllib.agents.gatsbi_van.gatsbi_van_model import GATSBIVanModel
+from ray.rllib.agents.gatsbi_van.modules.arch import ARCH
+from ray.rllib.agents.gatsbi_van.modules.utils import bcolors
+
 from ray.rllib.agents.trainer_template import build_trainer
 from ray.rllib.execution.common import STEPS_SAMPLED_COUNTER, \
     LEARNER_INFO, _get_shared_metrics, _get_global_vars
@@ -13,18 +17,15 @@ from ray.rllib.policy.sample_batch import SampleBatch
 from ray.rllib.policy.sample_batch import DEFAULT_POLICY_ID
 from ray.rllib.evaluation.metrics import collect_metrics
 # from ray.rllib.agents.dreamer.dreamer_model import DreamerModel
-from gatsbi_rl.rllib_agent.gatsbi_model import GATSBIModel
 # from ray.rllib.agents.gatsbi.gatsbi_model import GATSBIModel
 from ray.rllib.execution.rollout_ops import ParallelRollouts
 from ray.rllib.utils.typing import SampleBatchType
 # offline datareader
 from ray.rllib.offline import JsonReader
-from gatsbi_rl.gatsbi.arch import ARCH
 from .utils import scale_action
 
 import os
 from ray.rllib.utils.schedules import PiecewiseSchedule
-from gatsbi_rl.gatsbi.utils import bcolors
 
 logger = logging.getLogger(__name__)
 
@@ -229,8 +230,7 @@ class EpisodicBuffer(object):
 def total_sampled_timesteps(worker):
     return worker.policy_map[DEFAULT_POLICY_ID].global_timestep
 
-
-class GATSBIIteration:
+class GATSBIVanIteration:
     """ The main iterator for learing the GATSBI model.
     """
     def __init__(self, worker, episode_buffer, gatsbi_train_iters, batch_size,
@@ -439,7 +439,7 @@ def execution_plan(workers, config):
 
     rollouts = ParallelRollouts(workers)
     rollouts = rollouts.for_each(
-        GATSBIIteration(local_worker, episode_buffer, gatsbi_train_iters,
+        GATSBIVanIteration(local_worker, episode_buffer, gatsbi_train_iters,
             batch_size, act_repeat, eval_buffer=eval_buffer, demo_buffer=demo_buffer,
             global_step=config["gatsbi_model"]["global_step"]
             ))
@@ -447,7 +447,7 @@ def execution_plan(workers, config):
 
 
 def get_policy_class(config):
-    return GATSBITorchPolicy
+    return GATSBIVanTorchPolicy
 
 
 def validate_config(config):
@@ -464,10 +464,10 @@ def validate_config(config):
         config["horizon"] = config["horizon"] / config["action_repeat"]
 
 
-GATSBITrainer = build_trainer(
-    name="GATSBI",
+GATSBIVanTrainer = build_trainer(
+    name="GATSBIVan",
     default_config=DEFAULT_CONFIG,
-    default_policy=GATSBITorchPolicy,
+    default_policy=GATSBIVanTorchPolicy,
     get_policy_class=get_policy_class,
     execution_plan=execution_plan,
     validate_config=validate_config)

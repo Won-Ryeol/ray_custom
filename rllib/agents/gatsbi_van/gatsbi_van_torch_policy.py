@@ -5,7 +5,7 @@ import logging
 from ray.rllib.policy.torch_policy_template import build_torch_policy
 from ray.rllib.utils.framework import try_import_torch
 from ray.rllib.models.catalog import MODEL_DEFAULTS, ModelCatalog
-from ray.rllib.agents.gatsbi_van.gatsbi_model import RewardDecoder
+from ray.rllib.agents.gatsbi_van.gatsbi_van_model import RewardDecoder
 from ray.rllib.agents.gatsbi_van.utils import FreezeParameters
 from ray.rllib.agents.gatsbi_van.modules.arch import ARCH
 from ray.rllib.agents.gatsbi_van.modules.visualize import *
@@ -215,7 +215,7 @@ def compute_gatsbi_van_loss(obs,
             obs (TensorType): Observations (o_t)
             action (TensorType): Actions (a_(t-1))
             reward (TensorType): Rewards (r_(t-1))
-            model (TorchModelV2): GATSBIModel, encompassing all other models
+            model (TorchModelV2): GATSBIVanModel, encompassing all other models
             imagine_horizon (int): Imagine horizon for actor and critic loss
             discount (float): Discount
             lambda_ (float): Lambda, like in GAE
@@ -942,8 +942,6 @@ def gatsbi_van_optimizer_fn(policy, config):
     mix_weights = list(model.mixture_module.parameters())
     obj_weights = list(model.obj_module.parameters())
     kypt_weights = list(model.keypoint_module.parameters()) 
-    agent_depth_weights = list(model.agent_depth.parameters()) 
-    occl_metric_weights = list(model.occl_metric.parameters())
     reward_weights = list(model.reward.parameters()) + list(model.sub_reward.parameters())
     actor_weights = list(model.actor_high.parameters()) + list(model.actor_low.parameters())
     critic_weights = list(model.value1_high.parameters()) + list(model.value2_high.parameters())

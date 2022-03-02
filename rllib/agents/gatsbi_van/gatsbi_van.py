@@ -16,8 +16,6 @@ from ray.rllib.execution.common import STEPS_SAMPLED_COUNTER, \
 from ray.rllib.policy.sample_batch import SampleBatch
 from ray.rllib.policy.sample_batch import DEFAULT_POLICY_ID
 from ray.rllib.evaluation.metrics import collect_metrics
-# from ray.rllib.agents.dreamer.dreamer_model import DreamerModel
-# from ray.rllib.agents.gatsbi.gatsbi_model import GATSBIModel
 from ray.rllib.execution.rollout_ops import ParallelRollouts
 from ray.rllib.utils.typing import SampleBatchType
 # offline datareader
@@ -79,7 +77,7 @@ DEFAULT_CONFIG = with_common_config({
     # Custom Model
     # TODO (chmin): synchronize the model params with those in arch.py
     "gatsbi_model": {
-        "custom_model": GATSBIModel,
+        "custom_model": GATSBIVanModel,
         "global_step": 0, # global_step set by the user on model creation
     },
     # TODO (chmin): there should be no action repeat!
@@ -441,7 +439,7 @@ def execution_plan(workers, config):
     rollouts = rollouts.for_each(
         GATSBIVanIteration(local_worker, episode_buffer, gatsbi_train_iters,
             batch_size, act_repeat, eval_buffer=eval_buffer, demo_buffer=demo_buffer,
-            global_step=config["gatsbi_model"]["global_step"]
+            global_step=config["gatsbi_van_model"]["global_step"]
             ))
     return rollouts
 

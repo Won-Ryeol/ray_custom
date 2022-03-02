@@ -1,6 +1,6 @@
-from ray.rllib.agents.gatsbi.gatsbi import GATSBITrainer, DEFAULT_CONFIG
+from ray.rllib.agents.gatsbi_van.gatsbi_van import GATSBIVanTrainer, DEFAULT_CONFIG
 
 __all__ = [
-    "GATSBITrainer",
+    "GATSBIVanTrainer",
     "DEFAULT_CONFIG",
 ]

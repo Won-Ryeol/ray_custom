@@ -2,14 +2,14 @@ from ray.rllib.utils.framework import try_import_torch
 import numpy as np
 from torch.distributions import constraints
 from torch.distributions import gamma
-from gatsbi_rl.gatsbi.arch import ARCH
 
-# from gatsbi_rl.baselines.slide_to_target_config import CFG
-from gatsbi_rl.baselines.clear_objects_config import CFG
+from ray.rllib.agents.gatsbi_van.baselines.clear_objects_config import CFG
+from ray.rllib.agents.gatsbi_van.baselines.reward_utils import tensor_tolerance
+from ray.rllib.agents.gatsbi_van.modules.arch import ARCH
+
 import math
 import enum
 torch, nn = try_import_torch()
-from gatsbi_rl.baselines.reward_utils import tensor_tolerance
 
 class Axis(enum.Enum):
     """Maps axes to image indices, assuming that 0th dimension is the batch,
