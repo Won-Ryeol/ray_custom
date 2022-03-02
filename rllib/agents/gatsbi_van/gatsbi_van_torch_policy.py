@@ -213,7 +213,7 @@ def contrastive_loss(obs, action, next_obs):
     loss = self.pos_loss + self.neg_loss
 
 
-def compute_gatsbi_loss(obs,
+def compute_gatsbi_van_loss(obs,
                         action,
                         reward,
                         next_action,
@@ -242,13 +242,7 @@ def compute_gatsbi_loss(obs,
 
     # visualize the imagination obs.reshape(-1, 3, 64, 64)
     # obs - [B, T, 3, 64, 64], action - [B, T, A] (enhanced)
-    # empty cache periodically
-    #! very important guy!
-    # this should affect the joint training sequence.
-    # train_switch = torch.rand(1) >= 0.5 if model.global_step > ARCH.JOINT_TRAIN_GATSBI_START else False
-    train_switch = False
 
-    #! stop grads of target network. Only updated via Polyak averaging.
     if list(model.value_targ1_high.parameters())[0].requires_grad:
         for ac_params in list(model.value_targ1_high.parameters()) + list(model.value_targ2_high.parameters()) + \
             list(model.value_targ_low.parameters()):
@@ -269,11 +263,11 @@ def compute_gatsbi_loss(obs,
 
     if model.global_step >= ARCH.PRETRAIN_GATSBI_UNTIL:
         if model.global_step == ARCH.PRETRAIN_GATSBI_UNTIL:
-            print(bcolors.FAIL + "GATSBI Pretraining is done @ {0}. \
+            print(bcolors.FAIL + "GATSBI Vanilla Pretraining is done @ {0}. \
             Now finetunes GATSBI with exploration.".format(ARCH.PRETRAIN_GATSBI_UNTIL) + bcolors.ENDC)
         
         if model.global_step == ARCH.JOINT_TRAIN_GATSBI_START:
-            print(bcolors.FAIL + "GATSBI only training is done @ {0}. \
+            print(bcolors.FAIL + "GATSBI Vanilla only training is done @ {0}. \
             Now starts joint training with actor-critic learning.".format(ARCH.JOINT_TRAIN_GATSBI_START) + bcolors.ENDC)
        
         if model.global_step >= ARCH.JOINT_TRAIN_GATSBI_START:
@@ -311,6 +305,7 @@ def compute_gatsbi_loss(obs,
                     ):
                 gatsbi_params.requires_grad_(True)
 
+    # empty GPU cache periodically
     if model.global_step % 50 == 0:
         torch.cuda.empty_cache()
          
@@ -349,27 +344,15 @@ def compute_gatsbi_loss(obs,
     # https://discuss.pytorch.org/t/how-to-freeze-bn-layers-while-training-the-rest-of-network-mean-and-var-wont-freeze/89736/9
     # obs.reshape(-1, 3, 64, 64)
     if ARCH.TRAIN_LONG_TERM and model.global_step >= ARCH.TRAIN_LONG_TERM_FROM and model.global_step < ARCH.JOINT_TRAIN_GATSBI_START:
-        # stochastically transition between the normal and noisy training.
-        # if doing noisy training, fix the posterior and fit prior to posterior.
-        if np.random.randint(0, 2) % 2 == 0:
-            leverage = True
-            detached_timesteps = torch.randint(obs.size(1) - model.T, size=()) # obs.size(1) - model.T
-            obs, action, reward, next_action = random_crop((obs, action, reward, next_action), detached_timesteps + model.T)
-        else:
-            leverage = False
-            obs, action, reward, next_action = random_crop((obs, action, reward, next_action), model.T)
-            detached_timesteps = 0
+        # vanilla gatsbi do not leverage noisy rnn states.
+        leverage = False
+        obs, action, reward, next_action = random_crop((obs, action, reward, next_action), model.T)
+        detached_timesteps = 0
     else: # joint training or initial training (not noisy RNN)
         if model.global_step >= ARCH.JOINT_TRAIN_GATSBI_START:
-            if not train_switch: # representation learning and stop the agent learning
-                leverage = True
-                detached_timesteps = torch.randint(obs.size(1) - model.T, size=())#  obs.size(1) - model.T
-                obs, action, reward, next_action = random_crop((obs, action, reward, next_action), detached_timesteps + model.T)
-                # detached_timesteps = obs.size(1) - model.T
-            else: # start agent learning, stop representation learning
-                leverage = False
-                obs, action, reward, next_action = random_crop((obs, action, reward, next_action), ARCH.IMAGINE_TIMESTEP_CUTOFF)
-                detached_timesteps = 0
+            leverage = False
+            obs, action, reward, next_action = random_crop((obs, action, reward, next_action), ARCH.IMAGINE_TIMESTEP_CUTOFF)
+            detached_timesteps = 0
         else:
             obs, action, reward, next_action = random_crop((obs, action, reward, next_action), model.T)
             leverage = False
@@ -381,13 +364,10 @@ def compute_gatsbi_loss(obs,
         action = action[:, None].repeat(1, 2, 1) # expand temporal dim
         reward = reward[:, None].repeat(1, 2) # expand temporal dim
         # backup k-th step's data to compute new gradient for the student ats (k+1)-th step
-    # mixture_out['bg'][0]
     B, T, C, H, W = obs.size()
 
     raw_action = action.clone()[:, detached_timesteps:]
 
-    # train_scheme_context = torch.no_grad() if train_switch else nullcontext()
-    # with train_scheme_context:
     #* mixture module.
     mixture_out = model.mixture_module.encode(
         seq=obs, action=action, agent_idx=model.agent_slot_idx,
@@ -395,6 +375,7 @@ def compute_gatsbi_loss(obs,
     # used for generating pseudo mask and bg regularization
     obs_diff = obs - mixture_out['bg']
     inpt = torch.cat([obs, obs_diff], dim=2)
+
     #* do action enhance or not.
     A = action.size(-1)
     if model.global_step < ARCH.KYPT_MIX_JOINT_UNTIL: 
@@ -421,17 +402,6 @@ def compute_gatsbi_loss(obs,
         print(bcolors.WARNING + "AGENT SLOT IS FOUND AS {0}".format(model.agent_slot_idx))
         print('============================='+ bcolors.ENDC)
 
-    #* agent depth
-    z_agent_depth_raw = mixture_out['agent_depth_raw'] # [B, T, 1] mixture_out['masks'][:, :, model.agent_slot_idx].float().reshape(-1, 1, 64, 64)
-    z_agent_depth_raw_first_kl = mixture_out['agent_depth_raw_kl'] # [B, T, 1] mixture_out['masks'][:, :, model.agent_slot_idx].float().reshape(-1, 1, 64, 64)
-    z_agent_depth_raw_first_kl = z_agent_depth_raw_first_kl.sum([1, 2]) # [B]
-
-    z_agent_depth_loc_norm = z_agent_depth_raw[:, detached_timesteps:].norm(keepdim=True, dim=-1)
-    z_agent_depth_loc_norm_loss = torch.maximum(z_agent_depth_loc_norm, torch.tensor(4.0).to(obs.device))
-    z_agent_depth_loc_norm_loss = z_agent_depth_loc_norm_loss.sum([1, 2]) # [B,]
-
-    agent_depth_map, z_agent_depth = model.agent_depth.get_agent_depth_map(z_agent_depth = z_agent_depth_raw,
-        agent_mask=mixture_out['masks'][:, :, model.agent_slot_idx]) # [B, T, 1, H, W]
     #* object module
     obj_out = model.obj_module.track(obs = inpt, mix = mixture_out['bg'],
         discovery_dropout = ARCH.DISCOVERY_DROPOUT,
@@ -439,45 +409,9 @@ def compute_gatsbi_loss(obs,
         h_agent = mixture_out['h_masks_post'][:, :, model.agent_slot_idx].detach(), # history of the agent
         enhanced_act = mixture_out['enhanced_act'].detach(),
         agent_mask = mixture_out['masks'][:, :,model.agent_slot_idx].detach(),
-        leverage = leverage, model_T=model.T,
-        agent_depth=z_agent_depth,
-        agent_kypt=kypt_out['obs_kypts'].detach()
+        leverage = leverage, model_T=model.T
     )
 
-    #* auxiliary depth regularization losses
-    z_where_offset_norm = obj_out['z_where_offset_norm'][:, detached_timesteps:] # [B, T, N, 2]
-    uncertain_pos_norm = obj_out['uncertain_pos_norm'][:, detached_timesteps:] # [B, T, N, 2]
-    z_where_offset_norm = z_where_offset_norm.norm(dim=-1) # [B, T, N]
-    uncertain_pos_norm = uncertain_pos_norm.norm(dim=-1) # [B, T, N]
-
-    z_depth_offset = obj_out['z_depth_offset'][:, detached_timesteps:] # [B, T, N, 1]
-    z_depth_offset_norm = z_depth_offset.norm(keepdim=True, dim=-1)
-    z_depth_offset_norm_loss = torch.maximum(z_depth_offset_norm, torch.tensor(4.0).to(obs.device))
-    z_depth_offset_norm_loss = z_depth_offset_norm_loss.sum([1, 2, 3]) # [B,]
-    z_depth_norm_loss = z_agent_depth_loc_norm_loss + z_depth_offset_norm_loss # [B,]
-
-    with torch.no_grad():
-        kypt_mean_pos = kypt_out['obs_kypts'][..., :2][:, detached_timesteps:] # [B, T, 2]
-        kypt_mean_weight = kypt_out['obs_kypts'][..., -1][:, detached_timesteps:][..., None] # [B, T, 1]
-        kypt_mean = (kypt_mean_pos * kypt_mean_weight).sum(2, keepdim=True) / kypt_mean_weight.sum(2, keepdim=True)
-        kypt_mean_prev = kypt_mean[:, :-1] # [B, T-1, 2]
-        kypt_mean_next = kypt_mean[:, 1:] # [B, T-1, 2]
-        kypt_mean_diff_norm = (kypt_mean_next - kypt_mean_prev).norm(dim=-1) # [B, T-1] 
-
-    if not hasattr(model, "kypt_mean_diff_norm_rm"):
-        setattr(model, "kypt_mean_diff_norm_rm", kypt_mean_diff_norm.mean().detach())
-    elif model.global_step % 200 == 0:
-        model.kypt_mean_diff_norm_rm = 0.99 * model.kypt_mean_diff_norm_rm + 0.01 * kypt_mean_diff_norm.mean().detach()
-        print(bcolors.FAIL + f"Current kypt_mean_diff_norm_rm {model.kypt_mean_diff_norm_rm}" + bcolors.ENDC)
-    
-    #* auxiliary depth regularization losses
-    uncertain_pos_norm = torch.maximum(uncertain_pos_norm, model.kypt_mean_diff_norm_rm )# [B, T, N]
-    z_where_offset_norm = torch.maximum(z_where_offset_norm, model.kypt_mean_diff_norm_rm) # [B, T, N]
-    z_occ_mask = obj_out['z_occ'][:, detached_timesteps:].squeeze(-1).detach() # [B, T, N]
-    uncertain_pos_norm = (z_occ_mask * uncertain_pos_norm).sum([1, 2]) # [B, T, N] -> sum(1,2)
-    z_where_offset_norm = ((1. - z_occ_mask) * z_where_offset_norm).sum([1, 2]) # [B, T, N]  -> sum(1,2)
-    pos_diff_norm_loss = z_where_offset_norm + uncertain_pos_norm # [B]
-    
     B, T, N, D = obj_out['z_where'].size()
     _, _, K, _ = kypt_out['obs_kypts'].size()
 
@@ -496,181 +430,8 @@ def compute_gatsbi_loss(obs,
         alpha_map = (ARCH.FIX_ALPHA_VALUES * alpha_map.reshape(B, T, 1, 64, 64) - \
             kypt_out['gaussian_maps'].detach()).clamp(min=0.0)
 
-    #* contrastive loss for better z_occ classifier; [B,]
-    with torch.no_grad():
-        agent_kypt = kypt_out['obs_kypts'][:, detached_timesteps:].detach()
-        B, T, N, D = obj_out['z_where'].size()
-        _, _, K, _ = kypt_out['obs_kypts'].size()
-        _agent_kypt = agent_kypt.reshape(B, (T - detached_timesteps), K, 3).detach()
-
-        agent_kypt = torch.cat([_agent_kypt[..., 0][..., None], 
-                    - _agent_kypt[..., 1][..., None], _agent_kypt[..., -1][..., None]], dim=-1)
-
-        kypt_mean_pos = agent_kypt[..., :2]# [B, T, K, 2]
-        kypt_mean_weight = agent_kypt[..., -1][..., None] # [B, T, K, 1]
-        agent_kypt_mean = (kypt_mean_pos * kypt_mean_weight).sum(2, keepdim=True) / kypt_mean_weight.sum(2, keepdim=True)
-
-        if model.global_step < ARCH.JOINT_TRAIN_GATSBI_START:
-            agent_kypt_sorted = select(agent_kypt[..., -1], agent_kypt.clone())
-            pseudo_where = torch.cat([obj_out['z_where'][..., :2][:, detached_timesteps:], 
-                agent_kypt_sorted[..., :2]], dim=-1)  # [B, T, N, 4]
-            # torch.sort(agent_kypt, descending=True, dim=-1)[0][:, :, :N, :2]], dim=-1)  # [B, T, N, 4]
-            #* endow constraints
-            pseudo_where[..., 2:] = pseudo_where[..., 2:] + 1e-2 * (2 * torch.rand_like(pseudo_where[..., 2:]) - 1.)
-            pseudo_where[..., :2] = torch.minimum((pseudo_where[..., :2]), torch.tensor(0.3, device=obs.device))
-            pseudo_where[..., :2] = torch.maximum((pseudo_where[..., :2]), torch.tensor(0.1, device=obs.device))
-
-            #? generate positives generate positives generate positives generate positives generate positives generate positives
-            pseudo_depth = torch.arange(0,B*(T - detached_timesteps)*N).to(
-                obs.device).reshape(B*(T - detached_timesteps), N, 1).float() / (B*(T - detached_timesteps)*N) + 10.0
-            z_pseudo = ((obj_out['z_pres'][:, detached_timesteps:].reshape(B*(T - detached_timesteps), N, 1) > 0.5).float(), 
-                        pseudo_depth, 
-                        pseudo_where.reshape(B*(T - detached_timesteps), N, 4),
-                        obj_out['z_what'][:, detached_timesteps:, torch.randperm(N).long().to(obs.device)].reshape(B*(T - detached_timesteps), N, -1), 
-                        obj_out['z_dyna'][:, detached_timesteps:].reshape(B*(T - detached_timesteps), N, -1))
-            
-            # [B*T, N, 1], [B*T, N, 1], [B*T, N, 4], [B*T, N, D], [B*T, N, D] 
-            _, _, occ_importance_map, occ_y_att, \
-                occ_alpha_att_hat = model.obj_module.render(z_pseudo)
-            mask_filtered = (mixture_out['masks'][:, :, model.agent_slot_idx] > 0.1).float()
-            occ_agent_depth_map, _ = model.agent_depth.get_agent_depth_map(
-                z_agent_depth = - 1e5 * torch.ones_like(z_agent_depth_raw).to(obs.device),
-                agent_mask=mask_filtered) # [B*T, 1, H, W]
-
-            occ_agent_depth_map = occ_agent_depth_map[:, detached_timesteps:].reshape(B*(T-detached_timesteps), 1, H, W)
-            occ_ao_depth_map = torch.cat([occ_agent_depth_map[:, None], occ_importance_map], dim=1) # [B*T, N + 1, H, W] 
-            occ_ao_depth_map = occ_ao_depth_map / (torch.sum(occ_ao_depth_map, dim=1, keepdim=True) + 1e-5) # it works as a weight matrix
-            occ_agent_y_att = (mixture_out['masks'][:, detached_timesteps:, model.agent_slot_idx].reshape(B*(T-detached_timesteps), 1, H, W) * \
-                # mixture_out['comps'][:, detached_timesteps:, model.agent_slot_idx].reshape(B*(T-detached_timesteps), 3, H, W)) # [B*T, 3, H, W]
-                obs[:, detached_timesteps:].reshape(B*(T-detached_timesteps), 3, H, W)) # [B*T, 3, H, W]
-
-            occ_ao_y_att = torch.cat([occ_agent_y_att[:, None], occ_y_att], dim=1) # [B*T, N+1, 3, 64, 64]
-            occ_agent_obj = (occ_ao_y_att * occ_ao_depth_map).sum(dim=1) #[B*T, 3, 64, 64] 
-            occ_ao_att_hat = torch.cat([mixture_out['masks'][:, detached_timesteps:, model.agent_slot_idx].reshape(
-                B*(T-detached_timesteps), 1, H, W)[:, None], occ_alpha_att_hat], dim=1) # [B*T, N+1, 1, 64, 64]
-            occ_ao_alpha_map = (occ_ao_depth_map * occ_ao_att_hat).sum(1)
-            occ_recon = ((1.0 - occ_ao_alpha_map) * mixture_out['bg'][:, detached_timesteps:].reshape(
-                B*(T-detached_timesteps), 3, H, W) + occ_agent_obj) # [B*T, 3, 64, 64]
-
-            occ_recon_repeat = torch.repeat_interleave(occ_recon.reshape(-1, 3, 64, 64), N, dim=0)
-            positives = spatial_transform(image=occ_recon_repeat, z_where=pseudo_where.reshape(-1, 4), 
-                out_dims=(B * (T - detached_timesteps) * N, 3, *ARCH.GLIMPSE_SHAPE)) # [B*T*N, 3, 16, 16]
-
-            #! generate negatives generate negatives generate negatives generate negatives generate negatives generate negatives
-            z_pseudo2 = ((obj_out['z_pres'][:, detached_timesteps:].reshape(B*(T - detached_timesteps), N, 1) > 0.5).float(), 
-                        obj_out['z_depth'][:, detached_timesteps:].reshape(B*(T - detached_timesteps), N, 1), 
-                        obj_out['z_where'][:, detached_timesteps:].reshape(B*(T - detached_timesteps), N, 4),
-                        obj_out['z_what'][:, detached_timesteps:].reshape(B*(T - detached_timesteps), N, -1), 
-                        # obj_out['z_what'][:, detached_timesteps:, torch.randperm(N).long().to(obs.device)].reshape(B*(T - detached_timesteps), N, -1), 
-                        obj_out['z_dyna'][:, detached_timesteps:].reshape(B*(T - detached_timesteps), N, -1))
-            # [B*T, N, 1], [B*T, N, 1], [B*T, N, 4], [B*T, N, D], [B*T, N, D] occ_importance_map.sum(1)
-            _, _, non_occ_importance_map, non_occ_y_att, \
-                non_occ_alpha_att_hat = model.obj_module.render(z_pseudo2)
-            mask_filtered = (mixture_out['masks'][:, :, model.agent_slot_idx] > 0.1).float()
-            non_occ_agent_depth_map, _ = model.agent_depth.get_agent_depth_map(
-                z_agent_depth = 10 * torch.ones_like(z_agent_depth_raw).to(obs.device),
-                agent_mask=mask_filtered) # [B*T, 1, H, W]
-
-            non_occ_agent_depth_map = non_occ_agent_depth_map[:, detached_timesteps:].reshape(B*(T-detached_timesteps), 1, H, W)
-            non_occ_ao_depth_map = torch.cat([non_occ_agent_depth_map[:, None], non_occ_importance_map], dim=1) # [B*T, N + 1, H, W] 
-            non_occ_ao_depth_map = non_occ_ao_depth_map / (torch.sum(non_occ_ao_depth_map, dim=1, keepdim=True) + 1e-5) # it works as a weight matrix
-            non_occ_agent_y_att = (mixture_out['masks'][:, detached_timesteps:, model.agent_slot_idx].reshape(B*(T-detached_timesteps), 1, H, W) * \
-                obs[:, detached_timesteps:].reshape(B*(T-detached_timesteps), 3, H, W)) # [B*T, 3, H, W]
-            non_occ_ao_y_att = torch.cat([non_occ_agent_y_att[:, None], non_occ_y_att], dim=1) # [B*T, N+1, 3, 64, 64]
-            non_occ_agent_obj = (non_occ_ao_y_att * non_occ_ao_depth_map).sum(dim=1) #[B*T, 3, 64, 64] 
-        
-            non_occ_ao_att_hat = torch.cat([mixture_out['masks'][:, detached_timesteps:, model.agent_slot_idx].reshape(
-                B*(T-detached_timesteps), 1, H, W)[:, None], non_occ_alpha_att_hat], dim=1) # [B*T, N+1, 1, 64, 64]
-            non_occ_ao_alpha_map = (non_occ_ao_depth_map * non_occ_ao_att_hat).sum(1)
-            non_occ_recon = ((1.0 - non_occ_ao_alpha_map) * mixture_out['bg'][:, detached_timesteps:].reshape(
-                B*(T-detached_timesteps), 3, H, W) + non_occ_agent_obj) # [B*T, 3, 64, 64]
-
-            non_occ_recon_repeat = torch.repeat_interleave(non_occ_recon.reshape(-1, 3, 64, 64), N, dim=0)
-
-            where = obj_out['z_where'][:, detached_timesteps:].reshape(B*(T - detached_timesteps), N, 4)
-            negatives = spatial_transform(image=non_occ_recon_repeat, z_where=where.reshape(-1, 4), 
-                out_dims=(B * (T - detached_timesteps) * N, 3, *ARCH.GLIMPSE_SHAPE)) * obj_out['z_pres'][
-                :, detached_timesteps:].reshape(-1, 1, 1, 1) # [B*T*N, 3, 16, 16]
-            # raw obj_depth should be larger than that of agent depth.
-            # torch.sigmoid(-depth) should be applied. thus 
-            # thus, randomly generated agent depth - obj_depth > 0 (obj to agent depth)
-
-            pos_obj_to_agent_depth = torch.rand(B*(T - detached_timesteps), N, 1, device=obs.device) # [B*T, N, 1]
-            pos_obj_to_agent_pos = (agent_kypt_mean - pseudo_where[..., 2:]).reshape(B*(T-detached_timesteps), N, 2) #[B*T, N, 2]
-
-            obj_pos = obj_out['z_where'][:, detached_timesteps:, :, 2:]
-            # depths do not matter.
-            neg_obj_to_agent_depth = 2 * torch.rand(B*(T - detached_timesteps), N, 1, device=obs.device) - 1.0 # [B*T, N, 1]
-            neg_obj_to_agent_pos = (agent_kypt_mean - obj_pos).reshape(B*(T-detached_timesteps), N, 2) #[B*T, N, 2]
-
-    # # input should have [B*T, N, ...]
-    student_loss_opt = torch.zeros(1).to(obs.device)
-    occl_contrast_loss = torch.zeros(1).to(obs.device)
-
-    if model.global_step < ARCH.JOINT_TRAIN_GATSBI_START:
-        pos_enc = model.obj_module.occlusion_diff_encoder(positives.reshape(B*(T - detached_timesteps), N, 3, 16, 16))
-        neg_enc = model.obj_module.occlusion_diff_encoder(negatives.reshape(B*(T - detached_timesteps), N, 3, 16, 16))
-        
-        del positives
-        del negatives
-
-        pos_feat = model.obj_module.occlu_policy.uncertain_attention.cat_occ_feature(
-            torch.cat([pos_enc, pos_obj_to_agent_depth, pos_obj_to_agent_pos], dim=-1)
-        ) # [B*T, N, D]
-        neg_feat = model.obj_module.occlu_policy.uncertain_attention.cat_occ_feature(
-            torch.cat([neg_enc, neg_obj_to_agent_depth, neg_obj_to_agent_pos], dim=-1)
-        ) # [B*T, N, D]
-
-        pos_prob = model.obj_module.occlu_policy.uncertain_attention.z_occ_from_feat(pos_feat)
-        pos_prob = torch.sigmoid(pos_prob.reshape(-1, 1)) # [B*T*N, 1]. sigmoid-activated
-        neg_prob = model.obj_module.occlu_policy.uncertain_attention.z_occ_from_feat(neg_feat)
-        neg_prob = torch.sigmoid(neg_prob.reshape(-1, 1)) # [B*T*N, 1]. sigmoid-activated
-
-        student_loss_opt = - torch.norm(pos_prob, dim=-1).sum() + torch.norm(neg_prob, dim=-1).sum() # [,]
-
-        features = torch.cat([pos_feat.reshape(-1, ARCH.PROPOSAL_ENC_DIM), 
-            neg_feat.reshape(-1, ARCH.PROPOSAL_ENC_DIM)], dim=0) # [B*T*N*2, D]
-
-        features2 = torch.cat([pos_enc.reshape(-1, ARCH.PROPOSAL_ENC_DIM), 
-            neg_enc.reshape(-1, ARCH.PROPOSAL_ENC_DIM)], dim=0) # [B*T*N*2, D]
-
-        labels = torch.cat([torch.ones((B*(T - detached_timesteps)*N), device=obs.device), 
-            torch.zeros((B*(T - detached_timesteps)*N), device=obs.device)], dim=0).long() # [B*T*N*2, 1]
-        metric_out = model.occl_metric(features, labels) # [B, 2] metric_out[None]
-        metric_out2 = model.occl_metric(features2, labels) # [B, 2] metric_out[None]
-
-        cent_loss = torch.nn.CrossEntropyLoss(reduction="none")
-        occl_contrast_loss = cent_loss(metric_out, labels).detach() # [B,]
-        occl_contrast_loss2 = cent_loss(metric_out2, labels).detach() # [B,]
-
-        occl_contrast_loss = occl_contrast_loss.reshape(
-            B, T - detached_timesteps, N, 2).mean(-1).sum(-1).mean(1) + occl_contrast_loss2.reshape(
-            B, T - detached_timesteps, N, 2).mean(-1).sum(-1).mean(1)
-
-    # encode pos/neg and get the latents
-    # make the cossine similarity close to -1 (minimize) 
-    #* compute total likelihood that consists of fg and bg; [B, ]
-    if model.global_step >= ARCH.REJECT_ALPHA_UNTIL:
-        #! we do not need the concatenated feature for policy
-        # TODO (chmin): use this attention hat ao_depth_map.reshape(-1, 1, 64, 64)
-        _importance_map = obj_out['_importance_map'] # [B, T, 1, H, W] (sum over N) ao_depth_map.sum(2).reshape(-1, 1, 64, 64) (not normalized)
-        ao_depth_map = torch.cat([agent_depth_map[:, :, None], _importance_map], dim=2) # [B, T, N + 1, H, W] 
-        ao_depth_map = ao_depth_map / (torch.sum(ao_depth_map, dim=2, keepdim=True) + 1e-5) # it works as a weight matrix
-        agent_y_att = (mixture_out['masks'][:, :,model.agent_slot_idx] * mixture_out['comps'][:, :,model.agent_slot_idx].clone().detach())
-        ao_y_att = torch.cat([agent_y_att[:, :, None], obj_out['y_att']], dim=2) # [B, T, N+1, 3, 64, 64] ao_y_att.reshape(-1, 3, 64, 64)
-        agent_obj = (ao_y_att * ao_depth_map).sum(dim=2) #[B, T, 3, 64, 64] agent_obj.reshape(-1, 3, 64, 64)
-    
-        ao_att_hat = torch.cat([mixture_out['masks'][:, :, model.agent_slot_idx][:, :, None], obj_out['alpha_att_hat']], dim=2) 
-        ao_alpha_map = (ao_depth_map * ao_att_hat).sum(2)
-    
-        recon = ((1.0 - ao_alpha_map) * mixture_out['bg'] + agent_obj)
-        recon = recon[:, detached_timesteps:]
-
-        dist = Normal(recon, ARCH.SIGMA)
-        loglikelihood = dist.log_prob(obs[:, detached_timesteps:]).sum([2, 3, 4]).mean(1)
-    else:
-        loglikelihood = gaussian_likelihood(obs[:, detached_timesteps:], fg[:, detached_timesteps:],
-            bg[:, detached_timesteps:], alpha_map[:, detached_timesteps:], model.global_step)
+    loglikelihood = gaussian_likelihood(obs[:, detached_timesteps:], fg[:, detached_timesteps:],
+        bg[:, detached_timesteps:], alpha_map[:, detached_timesteps:], model.global_step)
 
     #* compute kl_div for both obj  and mixture modules 
     kl = kl_bg if (ARCH.BG_ON and model.global_step < ARCH.MODULE_TRAINING_SCHEME[1]) else kl_bg + kl_fg
@@ -694,35 +455,9 @@ def compute_gatsbi_loss(obs,
                 (kypt_out['gaussian_maps'][:, detached_timesteps:].detach() > 0.1).float() * mixture_out['comps'][:, detached_timesteps:, model.agent_slot_idx].detach())
         agent_embed_loss = agent_embed_loss.sum([2, 3, 4]).mean(1)
 
-    #* inverse dynamics loss. given z_t, z_{t+1}, h_{t+1} infer a_t
-    z_masks = mixture_out['z_masks'][:, detached_timesteps:].clone() # .permute(0, 2, 1, 3).reshape(B * ARCH.K, T, ARCH.Z_MASK_DIM)  # (B *K, T, Zm) ; z^m_{t:t+H-1}
-    z_masks_cur = z_masks[:, :-1]  # (B, T - 1, K, Zm) ; z^m_{t:t+H-1}
-    z_masks_next = z_masks[:, 1:]  # (B, T - 1, K, Zm) ; z^m_{t+1:t+H}
-    h_masks_next = mixture_out['h_masks_post'][:, detached_timesteps + 1:].clone() # (B, T-1, K, Zm) ; h^m_{t+1:t+H}
-    # given these, infer a_{t:t+H-1}
-    inv_action_pred = model.mixture_module.inv_dyna_pred(torch.cat([z_masks_cur, z_masks_next, h_masks_next], -1))  # (B, T - 1, K, Zm)
-    inv_act_dist = td.Normal(inv_action_pred, ARCH.INV_ACT_SIGMA) # (B, T - 1, K, Zm)
-    next_action = next_action[:, detached_timesteps:-1, None].repeat(1, 1, ARCH.K, 1) # [b, T - 1, K, A]
-    inv_dyna_loss = - ARCH.INV_DYNA_SCALE * inv_act_dist.log_prob(next_action).sum([2, 3]).mean(1)
-    # --- training scheme ---
-    # first few thousand steps are dedicated for keypoint learning
-
-    # TODO (chmin): add mask entropy loss here.
-    bg_indices = torch.tensor([k for k in range(ARCH.K) if k != model.agent_slot_idx], device=obs.device).long()
-    mask = mixture_out['masks'][:, detached_timesteps:].clone()
-    agent_mask = mask[:, :, model.agent_slot_idx][:, :, None]
-    bg_masks = mask[:, :, bg_indices]
-    mask_diff = agent_mask - bg_masks
-    mask_diff = nn.ReLU()(mask_diff)
-    mask_diff = mask_diff.sum([2, 3, 4, 5])
-    mask_diff_ent_loss = - mask_diff.sum(1).mean(0)
-    #* residual regularization loss.
+    #* --- training scheme ---
     res_reg_loss = torch.norm(mixture_out['mask_residuals'][:, detached_timesteps:], p=2, dim=-1).mean(1).sum(1) + \
             torch.norm(mixture_out['comp_residuals'][:, detached_timesteps:], p=2, dim=-1).mean(1).sum(1)
-
-    #* mixture latent regularization loss.
-    mask_input_reg_loss = torch.norm(mixture_out['mask_inputs_prior'][:, detached_timesteps:], p=2, dim=-1).mean(1).sum(1)
-    comp_input_reg_loss = ARCH.COMP_INPUT_REG_SCALE * torch.norm(mixture_out['comp_inputs_prior'][:, detached_timesteps:], p=2, dim=-1).mean(1).sum(1)
 
     #* object discovery encoding regularization loss. the scale of prop_map and x_enc should be similar 
     #* shape of discovery map: [B, D, G, G] 
@@ -734,9 +469,6 @@ def compute_gatsbi_loss(obs,
         model.obj_disc_scale_rm = 0.99 * model.obj_disc_scale_rm + 0.01 * obj_disc_scale.detach()
     obj_disc_reg_loss = torch.norm(obj_disc_scale - model.obj_disc_scale_rm)
     # [B, T, 1, 2], [B, T, 1], [B, T, N]
-    aux_info = {'kypt_mean': agent_kypt_mean, 'agent_depth': z_agent_depth[:, detached_timesteps:].clone().detach(),  'z_occ': z_occ_mask}
-    #* reward loss. shape of inputs [B, T, *]
-
 
     #! 1) keypoint learning starts first
     reward_loss = torch.zeros(1).to(obs.device)
@@ -751,26 +483,11 @@ def compute_gatsbi_loss(obs,
     #! 3) (keypoint) + mixture + object
     if model.global_step >= ARCH.MODULE_TRAINING_SCHEME[1]: # after agent idx is found.
         model_loss = model_loss + ARCH.RESIDUAL_SCALE * res_reg_loss
-        model_loss = model_loss + inv_dyna_loss + comp_input_reg_loss + mask_input_reg_loss + obj_disc_reg_loss
+        model_loss = model_loss + obj_disc_reg_loss
         if model.global_step < ARCH.JOINT_TRAIN_GATSBI_START:
             model_loss = model_loss + agent_embed_loss
 
-    if model.global_step >= ARCH.REJECT_ALPHA_UNTIL:
-        model_loss = model_loss +  pos_diff_norm_loss + \
-        z_depth_norm_loss + z_agent_depth_raw_first_kl
-        if model.global_step < ARCH.JOINT_TRAIN_GATSBI_START:
-            model_loss = model_loss + student_loss_opt + occl_contrast_loss
-
-    bern_diff_norm = torch.zeros_like(kypt_loss, device=obs.device)
-    if model.global_step >= ARCH.TUNE_AGENT_MASK_FROM and model.global_step < ARCH.JOINT_TRAIN_GATSBI_START:
-        # obs.reshape(-1, 3, 64, 64)
-        mask_bern_dist = td.RelaxedBernoulli(torch.tensor([0.1], device=obs.device), 
-            mixture_out['masks'][:, detached_timesteps:, model.agent_slot_idx])
-        mask_bern_samp = mask_bern_dist.rsample()
-        pooled_samp = MedianPool2d(kernel_size=3, same=True)(mask_bern_samp.reshape(-1, 1, H, W)).reshape(B, T - detached_timesteps, 1, H, W)
-        bern_diff_norm = ARCH.BERN_DIFF * torch.norm(mask_bern_samp - pooled_samp.detach(), p=1, dim=2).sum([2, 3]).mean(1)
-        model_loss = model_loss + bern_diff_norm + ARCH.MASK_DIFF_SCALE * mask_diff_ent_loss
-
+    #! 4) reward learning.1
     sub_reward_loss = torch.zeros(1)
     sub_reward_reg = torch.zeros(1).to(obs.device)
     sub_reward_reg_loss = torch.zeros(1).to(obs.device)
@@ -780,14 +497,14 @@ def compute_gatsbi_loss(obs,
             mixture_out['z_masks'][:, detached_timesteps:], mixture_out['z_comps'][:, detached_timesteps:], 
             obj_out['z_objs'][:, detached_timesteps:], mixture_out['h_masks_post'][:, detached_timesteps:], 
             mixture_out['h_comps_post'][:, detached_timesteps:], obj_out['h_objs'][:, detached_timesteps:],
-            aux=aux_info, action=raw_action
+            action=raw_action
         )
 
         indiv_latent_lists = model.get_indiv_features(
             mixture_out['z_masks'][:, detached_timesteps:], mixture_out['z_comps'][:, detached_timesteps:], 
             obj_out['z_objs'][:, detached_timesteps:], mixture_out['h_masks_post'][:, detached_timesteps:], 
             mixture_out['h_comps_post'][:, detached_timesteps:], obj_out['h_objs'][:, detached_timesteps:],
-            aux=aux_info, action=raw_action
+            action=raw_action
         )
 
         reward_pred = model.reward(features) # [B, T, ]
@@ -795,7 +512,6 @@ def compute_gatsbi_loss(obs,
         # compute object-wise reward values
         sub_reward_pred = torch.zeros(1).to(obs.device)
         for idx in range(ARCH.MAX):
-            # sub_reward = getattr(model.sub_rewards, f'obj_{idx}')
             sub_reward_pred_dist = model.sub_reward(indiv_latent_lists[idx])
             if model.global_step <= ARCH.SUB_REWARD_REG_STEPS + ARCH.JOINT_TRAIN_GATSBI_START:
                 sub_reward_reg = sub_reward_reg + (reward[:, detached_timesteps:][..., None].detach() / ARCH.MAX - \
@@ -806,21 +522,7 @@ def compute_gatsbi_loss(obs,
         sub_reward_loss = (reward[:, detached_timesteps:][..., None].detach() - sub_reward_pred[..., None]).norm(dim=-1).sum(1).mean(0)
 
         model_loss = model_loss + reward_loss + sub_reward_loss + sub_reward_reg_loss
-        # # TODO (chmin): diversity term for sub rewards
-        # # TODO: maximize conditional entropy between sub rewards.
-        # # TODO: <-> minimize log probability between sub rewards. 
-        # sub_reward_entropy = 0.0
-        # for i in range(ARCH.MAX):
-        #     for j in range(ARCH.MAX):
-        #         if i == j: continue
-        #         else:  
-        #             entropy = - sub_reward_pred_dist_list[i].log_prob(
-        #                 sub_reward_rsamples[j])
-        #             sub_reward_entropy  = sub_reward_entropy + entropy
-
-        # # entropy should be maximized to avoid trivial solution.
-        # sub_reward_entropy_loss = - sub_reward_entropy.sum(1).mean(0)
-        # model_loss = model_loss + sub_reward_entropy_loss
+        
     #* finalize model loss
     model_loss = model_loss.mean()
 
@@ -830,8 +532,6 @@ def compute_gatsbi_loss(obs,
         "model/elbo": elbo.mean(),
         "model/loglikelihood": loglikelihood.mean(),
         "model/kl": kl.mean(),
-        "model/agent_mask_bern_diff_norm": bern_diff_norm.mean(),
-        "model/inv_dyna_loss": inv_dyna_loss.mean(),
         "model/sub_reward_loss": sub_reward_loss.mean(),
         "model/sub_reward_reg_loss": sub_reward_reg_loss.mean(),
         "model/obj/kl_fg": kl_fg.mean(),
@@ -840,15 +540,8 @@ def compute_gatsbi_loss(obs,
         "model/obj/kl_where": obj_out['kl_where'].mean(),
         "model/obj/kl_what": obj_out['kl_what'].mean(),
         "model/obj/kl_dyna": obj_out['kl_dyna'].mean(),
-        "model/obj/kl_occ": obj_out['kl_occ'].mean(),
-        "model/obj/z_depth_norm_loss": z_depth_norm_loss.mean(),
-        "model/obj/pos_diff_norm_loss": pos_diff_norm_loss.mean(),
-        "model/obj/z_where_offset_norm": z_where_offset_norm.mean(),
-        "model/obj/uncertain_pos_norm": uncertain_pos_norm.mean(),
         "model/obj/obj_disc_reg_loss": obj_disc_reg_loss.mean(),
         "model/obj/obj_disc_scale": model.obj_disc_scale_rm.mean(),
-        "model/obj/student_loss": student_loss_opt.mean(),
-        "model/obj/occl_contrast_loss": occl_contrast_loss.mean(),
         "model/kypt/recon": kypt_out['kypt_recon_loss'].mean(),
         "model/kypt/sep": kypt_out['kypt_sep_loss'].mean(),
         "model/kypt/coord_pres": kypt_out['kypt_coord_pred_loss'].mean(),
@@ -857,12 +550,7 @@ def compute_gatsbi_loss(obs,
         "model/alpha_mean": alpha_map.mean(),
         "model/mix/agent_embed_loss": agent_embed_loss.mean(),
         "model/mix/mask_res_norm": torch.norm(mixture_out['mask_residuals'], p=2, dim=-1).mean(1).sum(1).mean(),
-        "model/mix/mask_res_scales": mixture_out['mask_scales'].mean(),
         "model/mix/comp_res_norm": torch.norm(mixture_out['comp_residuals'], p=2, dim=-1).mean(1).sum(1).mean(),
-        "model/mix/comp_res_scales": mixture_out['comp_scales'].mean(),
-        "model/mix/mask_input_prior": mask_input_reg_loss.mean(),
-        "model/mix/comp_input_prior": comp_input_reg_loss.mean(),
-        "model/mix/mask_diff_ent_loss": mask_diff_ent_loss.mean(),
         "model/mix/kl_bg": kl_bg.mean(),
         }
     preact_action = torch.zeros(1).to(obs.device)
@@ -910,10 +598,6 @@ def compute_gatsbi_loss(obs,
             high_level_reward = torch.stack([r.sum(dim=0) for r 
                 in reward_splits], dim=0)  # [H // X, B*T]
 
-            # TODO (chmin): to train low level actor, we're only interested in the 
-            # TODO: sub reward fration acquired by each low level policy.
-            # TODO (chmin): to compute subrewards, we should refer to the sub_policy idx
-            
             # compute low level values
             sub_reward_list = []
             low_level_val_list = []
@@ -1204,13 +888,13 @@ def gatsbi_loss(policy, model, dist_class, train_batch):
     else:
         eval_batch = None
 
-    policy.stats_dict = compute_gatsbi_loss(
+    policy.stats_dict = compute_gatsbi_van_loss(
         train_batch["obs"], # [B, T, 3, 64, 64]
         train_batch["actions"], # [B, T, A]
         train_batch["rewards"], # [B, T, ]
         train_batch["next_actions"], # [B, T, ]
         eval_batch,
-        policy.model, # Dreamer model.
+        policy.model, # GATSBI vanilla model.
         policy.config["imagine_horizon"], # 15
         policy.config["discount"], # 0.99
         policy.config["lambda"], # 0.95
@@ -1281,7 +965,7 @@ def gatsbi_optimizer_fn(policy, config):
     kypt_weights = list(model.keypoint_module.parameters()) 
     agent_depth_weights = list(model.agent_depth.parameters()) 
     occl_metric_weights = list(model.occl_metric.parameters())
-    reward_weights = list(model.reward.parameters())
+    reward_weights = list(model.reward.parameters()) + list(model.sub_reward.parameters())
     actor_weights = list(model.actor_high.parameters()) + list(model.actor_low.parameters())
     critic_weights = list(model.value1_high.parameters()) + list(model.value2_high.parameters())
     critic_weights = critic_weights + list(model.value_low.parameters())
@@ -1320,9 +1004,9 @@ def apply_grad_clipping(policy, optimizer, loss):
     return info
 
 # helper function to create the policy instance.
-GATSBITorchPolicy = build_torch_policy(
-    name="GATSBITorchPolicy",
-    get_default_config=lambda: gatsbi_rl.rllib_agent.gatsbi.DEFAULT_CONFIG,
+GATSBIVanTorchPolicy = build_torch_policy(
+    name="GATSBIVanTorchPolicy",
+    get_default_config=lambda: ray.rllib.agents.gatsbi_van.DEFAULT_CONFIG,
     action_sampler_fn=action_sampler_fn,
     loss_fn=gatsbi_loss,
     stats_fn=gatsbi_stats,

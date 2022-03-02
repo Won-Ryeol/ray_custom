@@ -302,7 +302,7 @@ class ObjModule(nn.Module):
         x = obs # [B, 3, H, W]
         # Update object states: propagate from prev step to current step
         state_post_prop, state_prior_prop, z_prop, _, proposal = self.propagate( 
-            x, fg, state_post, state_prior, z, mix, z_agent, h_agent, enhanced_act,
+            x, state_post, state_prior, z, mix, z_agent, h_agent, enhanced_act,
             first=first)
 
         ids_prop = ids
@@ -339,8 +339,7 @@ class ObjModule(nn.Module):
         return things
 
     def track(self, obs, mix, discovery_dropout, z_agent=None, h_agent=None, 
-        enhanced_act=None, agent_mask=None, leverage=False, backup=False, model_T=0,
-        agent_depth=None, agent_kypt=None):
+        enhanced_act=None, agent_mask=None, leverage=False, backup=False, model_T=0):
     
         """
         Doing tracking
@@ -362,60 +361,42 @@ class ObjModule(nn.Module):
         occ_refine_loss = torch.zeros([]).to(obs.device)
 
         if first:
-            _agent_kypt_first = agent_kypt[:, 0].clone()
-            agent_kypt_first = torch.cat([_agent_kypt_first[..., 0][..., None], 
-                - _agent_kypt_first[..., 1][..., None], _agent_kypt_first[..., -1][..., None]], dim=-1)
-            setattr(self, "agent_kypt_prev", agent_kypt_first.clone().detach())
+            # TODO (chmin): vanilla gatsbi do not utilize agent keypoints.
+            pass
 
         start_id = torch.zeros(B, device=obs.device).long()
 
         things = defaultdict(list)
 
         detached_timesteps = T - model_T
-        # obs[0, :, :3].reshape(-1, 3, 64, 64) obs[0, t-1, 3:]
-        # TODO (chmin): check the shape of z_agent and h_agent for modelling the interaction
-        fg = torch.zeros(B, 3, H, W, device=obs.device)
-        for t in range(T): # track over time seq., #! It seems like there's no dependency along the timestep.
+
+        for t in range(T): # track over time seq.
             
             noisy_train_context = torch.no_grad() if leverage and t < detached_timesteps \
                 else nullcontext()
             
             with noisy_train_context:
-                # (B, 3, H, W) obs[:, 0, :3] obs[:, t-2, :3]  fg
+                # (B, 6, H, W)
                 x = obs[:, t] # seq is concat of image of fg masks
                 # Update object states: propagate from prev step to current step
                 z_agent_t = z_agent[:, t]
                 h_agent_t = h_agent[:, t]
                 enhanced_act_t = enhanced_act[:, t]
-                # TODO (chmin): check the 'kl_prop' and 'kl_disc' self.render(z)[0] 
-                state_post_prop, state_prior_prop, z_prop, kl_prop, proposal, \
-                    z_occ, z_occ_post_prob, z_pres_post_prob, \
-                        z_where_offset_norm, uncertain_pos_norm, z_depth_offset, \
-                        proposal_scale_update = self.propagate(
-                    x, fg.clone().detach(), state_post, state_prior, z, mix[:, t], z_agent_t, 
-                    h_agent_t, enhanced_act_t, first=first, agent_depth=agent_depth[:, t], 
-                    agent_kypt=agent_kypt[:, t])
-                if t == 0:
-                    kl_occ = torch.zeros(B, device=x.device)
-                    kl_uncertain = torch.zeros(B, device=x.device)
-                if t >= 1:
-                    kl_occ = kl_prop[5]
-                    kl_uncertain = kl_prop[-1]
-                    kl_prop = kl_prop[:5]
+
+                state_post_prop, state_prior_prop, z_prop, kl_prop, proposal = self.propagate(
+                    x, state_post, state_prior, z, mix[:, t], z_agent_t, h_agent_t, enhanced_act_t,
+                    first=first)
 
                 ids_prop = ids
-                # if first or (t < 15 and torch.rand(1) > discovery_dropout):
+
                 if first or torch.rand(1) > discovery_dropout and t < 100:
                     state_post_disc, state_prior_disc, z_disc, ids_disc, kl_disc, prop_map, \
-                    x_enc, z_occ_disc = self.discover(
-                        x, z_prop, mix[:, t], start_id, z_agent_t, h_agent_t, enhanced_act_t, leverage, backup, 
-                        agent_depth=agent_depth[:, t], agent_kypt=agent_kypt[:, t], z_occ_prop=z_occ,
-                        proposal_scale_update=proposal_scale_update)
+                    x_enc = self.discover(
+                        x, z_prop, mix[:, t], start_id, z_agent_t, h_agent_t, enhanced_act_t)
                     first = False
                 else: # Do not conduct discovery
                     state_post_disc, state_prior_disc, z_disc, ids_disc = self.get_dummy_things(B, obs.device)
                     kl_disc = (0.0, 0.0, 0.0, 0.0, 0.0)
-                    z_occ_disc = torch.zeros(B, ARCH.MAX, 1).to(obs.device)
                 # Combine discovered and propagated things, and sort by p(z_pres)
                 # TODO (chmin): thresholding is necessary; should be no grad
                 # reject the agent being discovered.
@@ -425,17 +406,12 @@ class ObjModule(nn.Module):
                     z_disc = self.reject_by_render(agent_mask[:, t], z_disc)
 
                 state_post, state_prior, z, ids, proposal, z_occ_combined = self.combine(
-                    state_post_disc, state_prior_disc, z_disc, ids_disc, z_disc[2], z_occ_disc,
-                    state_post_prop, state_prior_prop, z_prop, ids_prop, proposal, z_occ
+                    state_post_disc, state_prior_disc, z_disc, ids_disc, z_disc[2], 
+                    state_post_prop, state_prior_prop, z_prop, ids_prop, proposal
                 )
-
-                # TODO (chmin): we should track z_occ.
-                setattr(self, "z_occ_prev", z_occ_combined.clone().detach())
 
                 kl = [x + y for (x, y) in zip(kl_prop, kl_disc)] # make a paired list of kl-divergences
                 # kl.extend([kl_occ, kl_uncertain])
-                kl.extend([kl_occ])
-                # self.render(z_disc)[0]  self.render(z_disc)[1]  self.render(z)[0] self.render(z_prop)[1]
                 fg, alpha_map, _importance_map, y_att, alpha_att_hat = self.render(z)
                 start_id = ids.max(dim=1)[0] + 1
 
@@ -445,7 +421,6 @@ class ObjModule(nn.Module):
                     z_where=z[2],  # (B, N, 4)
                     z_what=z[3],  # (B, N, D)
                     z_dyna=z[4],  # (B, N, D)
-                    # z_objs=torch.cat(z + [ids[..., None].float()], dim=-1), # [B, N, 6 + 2D + 1],
                     z_objs=torch.cat(z, dim=-1), # [B, N, 6 + 2D + 1],
                     h_objs=state_post[0], # [B, N, H] -> RNN hidden state
                     c_objs=state_post[1], # [B, N, H] -> RNN cell state
@@ -462,15 +437,9 @@ class ObjModule(nn.Module):
                     alpha_map=alpha_map,  # (B, 1, H, W)
                     _importance_map=_importance_map,
                     alpha_att_hat=alpha_att_hat,
-                    z_depth_offset=z_depth_offset,
                     y_att=y_att,
-                    disc_prop_map=prop_map, # (B, D, G, G) TODO (chmin): regularize this.
-                    disc_x_enc=x_enc,
-                    z_occ=z_occ_combined,
-                    z_occ_post_prob=z_occ_post_prob,
-                    z_pres_post_prob=z_pres_post_prob,
-                    z_where_offset_norm=z_where_offset_norm,
-                    uncertain_pos_norm=uncertain_pos_norm
+                    disc_prop_map=prop_map, # (B, D, G, G)
+                    disc_x_enc=x_enc
                 )
                 for key in things_t:
                     things[key].append(things_t[key])
@@ -552,8 +521,6 @@ class ObjModule(nn.Module):
             return [best_latent, best_keypoints]
         else:
             return [sampled_latent[0], sampled_keypoints[0]]
-
-
 
     def generate(self, obs, mix, cond_steps, sample=True, z_agent=None, h_agent=None, enhanced_act=None, agent_mask=None,
         agent_depth=None, agent_kypt=None):
@@ -732,33 +699,33 @@ class ObjModule(nn.Module):
         B, *_ = x.size() 
         # (B, D, G, G) x[:, 3:]
         x_enc = self.img_encoder(x)
-        # (B, D, G, G) # TODO (chmin): check the shape of 'z_prop'
-        prop_map = self.compute_prop_map(z_prop) # construct 2D Gaussian kernel #! Eq.(32) of supl?
+        # (B, D, G, G) 
+        prop_map = self.compute_prop_map(z_prop) # construct 2D Gaussian kernel
         # (B, D, G, G) prop_map.mean(1)[:, None] x_enc.mean(1)[:, None] enc.mean(1)[:, None]
         enc = torch.cat([x_enc, prop_map], dim=1) # condition discovery on propagation.
-        #! get posteriors of latents from discovery
+        #* get posteriors of latents from discovery
         (z_pres_post_prob, z_depth_post_loc, z_depth_post_scale, z_where_post_loc,
          z_where_post_scale, z_what_post_loc, z_what_post_scale, z_dyna_loc,
-         z_dyna_scale) = self.pres_depth_where_what_latent_post_disc(enc) #! Eq.(33) of supl
+         z_dyna_scale) = self.pres_depth_where_what_latent_post_disc(enc) 
 
-        z_dyna_loc, z_dyna_scale = self.latent_post_disc(enc) #! Eq.(34) of supl
-        # z_dyna_loc, z_dyna_scale = self.latent_post_disc_action.forward_act(enc, ee) #! Eq.(34) of supl
+        z_dyna_loc, z_dyna_scale = self.latent_post_disc(enc) 
+        # z_dyna_loc, z_dyna_scale = self.latent_post_disc_action.forward_act(enc, ee) 
         z_dyna_post = Normal(z_dyna_loc, z_dyna_scale)
         z_dyna = z_dyna_post.rsample()
 
         # Compute posteriors. All (B, G*G, D)
         z_pres_post = RelaxedBernoulli(temperature=self.tau, probs=z_pres_post_prob)
-        z_pres = z_pres_post.rsample() #! Eq.(35) of supl
+        z_pres = z_pres_post.rsample()
 
         z_depth_post = Normal(z_depth_post_loc, z_depth_post_scale)
-        z_depth = z_depth_post.rsample() #! Eq.(36) of supl
+        z_depth = z_depth_post.rsample()
 
         z_where_post = Normal(z_where_post_loc, z_where_post_scale)
-        z_where = z_where_post.rsample() #! Eq.(37) of supl
-        z_where = self.z_where_relative_to_absolute(z_where) #! Eq.(39), (40)
+        z_where = z_where_post.rsample()
+        z_where = self.z_where_relative_to_absolute(z_where)
 
         z_what_post = Normal(z_what_post_loc, z_what_post_scale)
-        z_what = z_what_post.rsample() #! Eq.(38) of supl
+        z_what = z_what_post.rsample()
 
         # Combine the posterior samples z_{***}
         z = (z_pres, z_depth, z_where, z_what, z_dyna)
@@ -772,23 +739,14 @@ class ObjModule(nn.Module):
             z = self.rejection(z, z_prop, ARCH.REJECTION_THRESHOLD)
             z = self.self_rejection(z, 0.6)
 
-        #! these are original codes
         ids = torch.arange(ARCH.G ** 2, device=x_enc.device).expand(B, ARCH.G ** 2) + start_id[:, None]
-
-        # Update temporal states     self.render(z)[0]   self.render(z_prop)[0]
+        # Update temporal states 
         state_post_prev = self.get_state_init(B, 'post')
         state_prior_prev = self.get_state_init(B, 'prior')
 
         z, state_post_prev, state_prior_prev, ids = self.select(
             z_pres, z, state_post_prev, state_prior_prev, ids)
-        #! these are original codes
         # propagated objects should be weighted by z_occ.
-
-        # TODO (chmin): add keypoint related features for temporal encoding.
-        _agent_kypt = agent_kypt.clone()
-
-        agent_kypt = torch.cat([_agent_kypt[..., 0][..., None], 
-            - _agent_kypt[..., 1][..., None], _agent_kypt[..., -1][..., None]], dim=-1)
 
         kl_pres = kl_divergence_bern_bern(z_pres_post_prob, torch.full_like(z_pres_post_prob, self.z_pres_prior_prob))
 
@@ -810,15 +768,11 @@ class ObjModule(nn.Module):
         kl_dyna = kl_dyna
 
         # TODO (chmin): crop out top N objects. to reduce computational cost.
-        # kl_pres, kl_depth, kl_where, kl_what, kl_dyna = self.select_kldiv(
-        #     z_pres, (kl_pres, kl_depth, kl_where, kl_what, kl_dyna))
-        z_occ_disc = torch.zeros_like(z[0]).to(x.device)
 
-        state_post = self.temporal_encode(state_post_prev, z, bg, z_agent, h_agent, agent_depth, 
-            enhanced_act, prior_or_post='post', agent_kypt=agent_kypt, z_occ=z_occ_disc) # get random hidden & cell state
-        state_prior = self.temporal_encode(state_prior_prev, z, bg, z_agent, h_agent, agent_depth,
-            enhanced_act, prior_or_post='prior', agent_kypt=agent_kypt, z_occ=z_occ_disc)
-
+        state_post = self.temporal_encode(state_post_prev, z, bg, z_agent, h_agent,
+            enhanced_act, prior_or_post='post') # get random hidden & cell state
+        state_prior = self.temporal_encode(state_prior_prev, z, bg, z_agent, h_agent,
+            enhanced_act, prior_or_post='prior')
 
         #! Sum over non-batch dimensions
         kl_pres = kl_pres.flatten(start_dim=1).sum(1)
@@ -826,7 +780,7 @@ class ObjModule(nn.Module):
         kl_what = kl_what.flatten(start_dim=1).sum(1)
         kl_depth = kl_depth.flatten(start_dim=1).sum(1)
         kl_dyna = kl_dyna.flatten(start_dim=1).sum(1)
-        # kl_dyna = torch.zeros_like(kl_dyna)
+        # kl_dyna = toch.zeros_like(kl_dyna)
         kl = (kl_pres, kl_depth, kl_where, kl_what, kl_dyna)
 
         return state_post, state_prior, z, ids, kl, prop_map, x_enc
@@ -953,7 +907,7 @@ class ObjModule(nn.Module):
         return state, z, z_occ
 
 
-    def propagate(self, x, fg, state_post_prev, state_prior_prev, z_prev, bg, z_agent, h_agent, 
+    def propagate(self, x, state_post_prev, state_prior_prev, z_prev, bg, z_agent, h_agent, 
         enhanced_act, first=False):
         """
         # One step posterior propagation
@@ -1045,10 +999,7 @@ class ObjModule(nn.Module):
         z_where_offset = z_where_post.rsample()  #! Eq.(16) of supl.
         z_where = torch.zeros_like(z_where_prev)
         # Scale; [B, N, 4] -> [B, N, 2] (mean), [B, N, 2] (shift).
-        # if z_occ: update by this policy       fg
 
-        # TODO (chmin): z_occ ~ 1 (occlusion); z_occ ~ 0 (no occlusion)
-        # it is not a sufficient reward signal when z_occ is ... z_occ ~ 1 
         # Scale
         z_where[..., :2] = z_where_prev[..., :2] + ARCH.Z_SCALE_UPDATE_SCALE * z_where_gate[..., :2] * torch.tanh(
             z_where_offset[..., :2])
@@ -1330,7 +1281,6 @@ class ObjModule(nn.Module):
                 h: (B, N, D)
                 c: (B, N, D)
         """
-        # TODO (chmin): for some steps, the shapes become inconsistent
 
         assert prior_or_post in ['prior', 'post']
         B, N, _ = state[0].size()

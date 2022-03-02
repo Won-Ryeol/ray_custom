@@ -714,12 +714,11 @@ class GATSBIVanModel(TorchModelV2, nn.Module):
             z_pres_prior, z_depth_prior, z_where_prior = z_objs_prior[..., :1], z_objs_prior[..., 1:2], z_objs_prior[..., 2:6]
             z_what_prior, z_dyna_prior = z_objs_prior[..., 6:6 + ARCH.Z_WHAT_DIM], z_objs_prior[..., 6 + ARCH.Z_WHAT_DIM:]
 
-            aux_info = {'kypt_mean': agent_kypt_mean, 'agent_depth': z_agent_depth,  'z_occ': z_occ}
             # get the feature for the policy f_t = [h_t | z_t]
             features, = self.get_feature_for_agent(
                 z_masks_prior, z_comps_prior, z_objs_prior,
                 h_masks_prior, h_comps_prior, h_objs_prior,
-                aux=aux_info, action=raw_action
+                action=raw_action
             ).detach(), # [B*T, D]
 
             # let's make sure that the horizon is at least 12 steps.
@@ -730,18 +729,16 @@ class GATSBIVanModel(TorchModelV2, nn.Module):
                 setattr(self, "sub_policy_ind", sub_policy_ind.long().squeeze())
                 setattr(self, "sub_policy_ind_inpt", sub_policy_ind_inpt)
 
-            # TODO (chmin): debug from here!!
             with torch.no_grad():
                 indiv_feats_list = self.get_indiv_features(
-                        z_masks_prior, z_comps_prior, z_objs_prior,
-                        h_masks_prior, h_comps_prior, h_objs_prior,
-                        aux=aux_info, action=raw_action
-                    ) # [B*T, D]
+                    z_masks_prior, z_comps_prior, z_objs_prior,
+                    h_masks_prior, h_comps_prior, h_objs_prior,
+                    action=raw_action
+                ) # [B*T, D]
 
             low_level_feat_list = []
             for batch_idx in range(features.size(0)): # iterate for B*T dim.
                 sub_policy_idx = self.sub_policy_ind[batch_idx]
-                # TODO (chmin): concat with this. 'sub_policy_idx_inpt'
                 low_level_feat = torch.cat([indiv_feats_list[sub_policy_idx][batch_idx], 
                     self.sub_policy_ind_inpt[batch_idx]
                 ], dim=-1) # [D]
@@ -763,22 +760,7 @@ class GATSBIVanModel(TorchModelV2, nn.Module):
                 z_prevs=(z_masks_prior, z_comps_prior),
                 agent_slot=self.agent_slot_idx
                 ) # return; z_comps, z_masks, h_mask_prior, h_comp_prior, bg, action
-            # mixture_out['bg'] , obj_out['fg']
-            z_agent_depth_raw = mixture_out['agent_depth_raw'] # [B, T, 1] mixture_out['masks'][:, :, model.agent_slot_idx].float().reshape(-1, 1, 64, 64)
-            with torch.no_grad():
-                agent_depth_map, z_agent_depth = self.agent_depth.get_agent_depth_map(z_agent_depth = z_agent_depth_raw,
-                    agent_mask=mixture_out['masks'][:, self.agent_slot_idx]) # [B, 1, H, W]
-                kypt_out = self.keypoint_module.infer_keypoints(mixture_out['bg'], mixture_out['enhanced_act'],
-                    is_first=not cur_horizon, global_step=self.global_step)
 
-            # first step of imagine.
-            if cur_horizon == 0:
-                _agent_kypt = kypt_out['obs_kypts'].detach().clone()
-                agent_kypt_first = torch.cat([_agent_kypt[..., 0][..., None], 
-                - _agent_kypt[..., 1][..., None], _agent_kypt[..., -1][..., None]], dim=-1)
-                setattr(self.obj_module, "agent_kypt_prev", agent_kypt_first)
-
-            #! NOTE that the posterior discovery is already refelcted in the history
             obj_out = self.obj_module.imagine(
                 mix=mixture_out['bg'].detach(), # [B*T, 3, 64, 64], object motion is deterministic.
                 history=(h_objs_prior, c_objs_prior), # [B*T, N, D]
@@ -786,22 +768,9 @@ class GATSBIVanModel(TorchModelV2, nn.Module):
                          ids_prior, proposal), # [B*T, N,]
                 z_agent=mixture_out['z_masks'][:, self.agent_slot_idx].detach(), 
                 h_agent=mixture_out['h_mask_prior'][:, self.agent_slot_idx].detach(),
-                enhanced_act=mixture_out['enhanced_act'].detach(), sample=True,
-                agent_depth=z_agent_depth.detach(),
-                agent_kypt=kypt_out['obs_kypts'].detach()
+                enhanced_act=mixture_out['enhanced_act'].detach(), sample=True
                 )
             z_occ_mask = obj_out['z_occ'].squeeze(-1) # [B, N]
-
-            agent_kypt = kypt_out['obs_kypts']
-            _agent_kypt = agent_kypt.clone()
-            agent_kypt = torch.cat([_agent_kypt[..., 0][..., None], 
-                        - _agent_kypt[..., 1][..., None], _agent_kypt[..., -1][..., None]], dim=-1)
-            # mixture_out['bg'] , obj_out['fg']
-            kypt_mean_pos = agent_kypt[..., :2]# [B, T, K, 2]
-            kypt_mean_weight = agent_kypt[..., -1][..., None] # [B, T, K, 1]
-            agent_kypt_mean = (kypt_mean_pos * kypt_mean_weight).sum(
-                1, keepdim=True) / kypt_mean_weight.sum(1, keepdim=True)
-
 
             deter_states = (mixture_out['h_mask_prior'], mixture_out['c_mask_prior'], mixture_out['h_comp_prior'],
                 mixture_out['c_comp_prior'], obj_out['h_c_objs'][0], obj_out['h_c_objs'][1],
@@ -814,15 +783,11 @@ class GATSBIVanModel(TorchModelV2, nn.Module):
             del mixture_out
             del obj_out
 
-            # TODO (chmin): return action here for action scale regularization.
             return deter_states, sto_states, pre_act_action, action, self.sub_policy_ind, \
                 self.sub_policy_ind_inpt, low_actor_entropy
         
         # execute imagination rollout.
         sto_last, deter_last = sto_start, deter_start
-
-        # set the agent depth as prev one.
-
 
         # (Will be) len 5 list of lists of len H trajectories; z_masks, z_comps, z_objs, ids, proposal
         sto_outputs = [[] for s in range(len(sto_start))]
@@ -845,7 +810,8 @@ class GATSBIVanModel(TorchModelV2, nn.Module):
             sub_policy_idx_list.append(sub_policy_idx)
             sub_policy_ind_inpt_list.append(sub_policy_ind_inpt)
             low_actor_entropy_list.append(low_actor_entropy)
-        # stack into the shape [H, B*T, ...]
+
+        # stack or concat into the shape [H, B*T, ...]
         sto_outputs = [torch.stack(so, dim=0) for so in sto_outputs]
         deter_outputs = [torch.stack(do, dim=0) for do in deter_outputs]
         preact_action = torch.cat(preact_action_list, dim=0) # [B * T * H, A'], A' is action dim before tanh squashing
@@ -854,12 +820,6 @@ class GATSBIVanModel(TorchModelV2, nn.Module):
         sub_policy_ind_inpt = torch.stack(sub_policy_ind_inpt_list, dim=0) #  [B * T * H, ARCH.MAX]
         low_actor_entropy = torch.stack(low_actor_entropy_list, dim=0) #  [B * T * H, ARCH.MAX]
 
-        aux_info = {'kypt_mean': deter_outputs[-1], 'agent_depth': sto_outputs[-1],  'z_occ': sto_outputs[-2]}
-
-        imag_ao_pos_diff, imag_ao_depth_diff = self.get_intrinsic_reward(
-            sto_outputs[0], sto_outputs[1], sto_outputs[2],
-            deter_outputs[0], deter_outputs[2], deter_outputs[4],
-            aux=aux_info)
         # imag feat has both gradient for high- and low- level policies.
         imag_feat = self.get_feature_for_agent(
             sto_outputs[0], sto_outputs[1], sto_outputs[2],
@@ -872,11 +832,8 @@ class GATSBIVanModel(TorchModelV2, nn.Module):
             aux=aux_info, action=raw_action
         )
         
-        return imag_feat, preact_action, raw_action, imag_ao_pos_diff, imag_ao_depth_diff, \
-            indiv_latent_lists, sub_policy_idx, sub_policy_ind_inpt, low_actor_entropy
-
-    def value_function(self):
-        return None
+        return imag_feat, preact_action, raw_action, indiv_latent_lists, \
+            sub_policy_idx, sub_policy_ind_inpt, low_actor_entropy
 
     def get_initial_state(self) -> List[TensorType]:
         z_masks = self.mixture_module.z_mask_0.expand(1, ARCH.K, ARCH.Z_MASK_DIM) # 0
@@ -888,9 +845,7 @@ class GATSBIVanModel(TorchModelV2, nn.Module):
         z_what = torch.zeros(1, ARCH.MAX, ARCH.Z_WHAT_DIM, device=z_masks.device) # 9
         z_dyna = torch.zeros(1, ARCH.MAX, ARCH.Z_DYNA_DIM, device=z_masks.device) # 10
         ids = torch.zeros(1, ARCH.MAX, device=z_masks.device).long() # 13, ids_prop
-        # ids = torch.zeros(1, 0, device=z_masks.device).long() # 13
         action = torch.zeros(1, ARCH.ACTION_DIM, device=z_masks.device)
-        fg = torch.zeros(1, 3, ARCH.IMAGE_SHAPE[0][0], ARCH.IMAGE_SHAPE[0][1], device=z_masks.device)
 
         mix_states = self.mixture_module.get_init_recur_state()
         obj_states = self.obj_module.get_init_recur_state()
@@ -899,10 +854,6 @@ class GATSBIVanModel(TorchModelV2, nn.Module):
         prior_states = []
 
         post_states.extend([t for t in mix_states['post']]) # 2, 3, 4, 5
-        post_states.extend([z_pres, z_depth, z_where, z_what, z_dyna]) # 6, 7, 8, 9, 10
-        post_states.extend([t for t in obj_states['post']]) # 11, 12
-        post_states.extend([ids, action, fg]) # 13
-
-        # prior_states.extend([t for t in mix_states['prior']] + [t for t in obj_states['prior']])
+        post_states.extend([ids, action]) # 13
 
         return post_states

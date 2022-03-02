@@ -243,7 +243,7 @@ class MixtureModule(nn.Module):
                 action: action @ t-1.
                 episodic_step: the step of current epsiode.
         """
-        B, C, H, W = obs.size() #! 
+        B, C, H, W = obs.size() 
         A = action.size(-1)
         action = torch.squeeze(action, 1)
         action = self.action_enhance(action) # [B, T, A]
@@ -528,9 +528,6 @@ class MixtureModule(nn.Module):
         # temporal update
         z_masks_prev = None # placeholder for the temporal concat of mask latent.
         z_comps_prev = None # placeholder for the temporal concat of comp latent.
-
-        agent_depth_raw_list = []
-        agent_depth_raw_list_kl = []
         # Iterate over prediction horizon T.
 
         detached_timesteps = T - model_T
@@ -572,7 +569,6 @@ class MixtureModule(nn.Module):
 
                 z_mask_posteriors = [] # list to append post. mask distribs. Used for KL div. computation
                 z_comp_posteriors = [] # list to append post. comp distribs. Used for KL div. computation
-                z_comp_posteriors_mat = [] # list to append post. comp distribs. Used for KL div. computation
 
                 # TODO (chmin): experimental. reguralize prior network scales.
                 mask_inputs_prior = []
@@ -602,16 +598,12 @@ class MixtureModule(nn.Module):
                     z_mask_post = Normal(z_mask_loc, z_mask_scale) # [B, Zm]
                     z_mask = z_mask_post.rsample()  # z^m_t
 
-                    # TODO (chmin): residual update seems broken here!
                     # for t >= 1; residual update of the mask variable: z^m_{t+1,k} <- z^m_{t,k} + f(z^m_{t+1,k}, z^m_{t,k}) 
                     if t > 0 and z_masks_prev is not None: # z_masks_prev is updated after t > 1.
-                        res_m_latent, res_m_scale = torch.split(self.mask_residual_update(torch.cat([z_masks_prev[:, k], z_mask], dim=-1)),
-                            2 * [ARCH.Z_MASK_DIM], dim=-1) 
-                        z_mask = torch.add(z_masks_prev[:, k], 2.0 * torch.nn.Hardsigmoid()(res_m_scale) * res_m_latent)
+                        res_m_latent = self.mask_residual_update(torch.cat([z_masks_prev[:, k], z_mask], dim=-1))
+                        z_mask = torch.add(z_masks_prev[:, k], ARCH.RESIDUAL_SCALE * res_m_latent)
                         # append the mask residual tensor for regularization.
-                        # res_m_latents.append(res_m_latent)
-                        res_m_latents.append(torch.cat([res_m_latent, res_m_scale], dim=-1))
-                        res_m_scales.append(torch.nn.Hardsigmoid()(res_m_scale))
+                        res_m_latents.append(res_m_latent)
                     z_mask_k_prev = z_mask # for autoregressive update.
                     # condition action for decoding (cVAE scheme) 
                     z_masks.append(z_mask) # append the individual latent for prior sampling.
@@ -626,7 +618,6 @@ class MixtureModule(nn.Module):
                 z_masks_cat = torch.stack(z_masks, dim=1) # [B, K, Zm]
                 if t > 0: 
                     res_m_latents = torch.stack(res_m_latents, dim=1)  # [B, K, Zm]
-                    res_m_scales = torch.stack(res_m_scales, dim=1)  # [B, K, Zm]
 
                 masks = torch.stack(masks, dim=1) # (B, K, 1, H, W) in range (0, 1)
                 # SBP to ensure to be summed up to 1. masks.reshape(-1, 1, 64, 64)
@@ -654,13 +645,10 @@ class MixtureModule(nn.Module):
                 # iterate over spatial component latents
                 if t > 0 and z_comps_prev is not None: # z_comps_prev is not None for t > 0.c
                     for k in range(ARCH.K):
-                        res_c_latent, res_c_scale = torch.split(self.comp_residual_update(torch.cat([z_comps_prev[:, k], z_comps_raw[:, k]], dim=-1)),
-                            2 * [ARCH.Z_COMP_DIM], dim=-1)
-                        z_comp = torch.add(z_comps_prev[:, k], 2.0 * torch.nn.Hardsigmoid()(res_c_scale) * res_c_latent)
+                        res_c_latent = self.comp_residual_update(torch.cat([z_comps_prev[:, k], z_comps_raw[:, k]], dim=-1))
+                        z_comp = torch.add(z_comps_prev[:, k], ARCH.RESIDUAL_SCALE * res_c_latent)
                         # append the comp residual tensor for regularization.
-                        res_c_latents.append(torch.cat([res_c_latent, res_c_scale], dim=-1))
-                        # res_c_latents.append(res_c_latent)
-                        res_c_scales.append(torch.nn.Hardsigmoid()(res_c_scale))
+                        res_c_latents.append(res_c_latent)
                         z_comps.append(z_comp)
                     # stack the residual tensors 
                     res_c_latents = torch.stack(res_c_latents, dim=1)
@@ -677,8 +665,6 @@ class MixtureModule(nn.Module):
                 # reshape the loc & scale of distributions to compute KL divergence
                 for k in range(ARCH.K):
                     z_comp_post_this = Normal(z_comp_loc[:, k], z_comp_scale[:, k])
-                    # TODO (Chmin): create matrix-shaped [B, B, Zc] posterior distributions.
-                    z_comp_posteriors_mat.append
                     z_comp_posteriors.append(z_comp_post_this)
                 # Decode into component images, [B*K, 3, H, W] masks.reshape(-1, 1, 64, 64)
                 comps = comps.view(B, K, 3, H, W)
@@ -788,7 +774,6 @@ class MixtureModule(nn.Module):
                 h_comp_t_prior = h_comp_t_prior.reshape(B * ARCH.K, -1)
                 c_comp_t_prior = c_comp_t_prior.reshape(B * ARCH.K, -1)
 
-
                 temp_comp_inpt = torch.cat([z_comps_cat, bg_encs], dim=-1)
                 temp_comp_inpt = temp_comp_inpt.view(B * ARCH.K, -1)
                 # encode the two inputs into one: [B, K, D + Zc] -> [B, K, Zc]
@@ -813,9 +798,7 @@ class MixtureModule(nn.Module):
                 # accumulate residual tensors
                 if t > 0:
                     res_m_latents_t.append(res_m_latents)
-                    res_m_scales_t.append(res_m_scales)
                     res_c_latents_t.append(res_c_latents)
-                    res_c_scales_t.append(res_c_scales)
 
                 # accumulate the hidden state of mask prior RNN. The agent slot of this represents the trajectory of the agent.
                 h_masks_t.append(h_mask_t_prior.reshape(B, ARCH.K, -1)) # [B, K, Hm]
@@ -828,26 +811,6 @@ class MixtureModule(nn.Module):
                 z_masks_prev = z_masks_cat  
                 z_comps_prev = z_comps_cat # update the concat of latents.
 
-                depth_inpt = torch.cat([z_masks_cat[:, agent_idx], 
-                    h_mask_t_post.reshape(B, ARCH.K, -1)[:, agent_idx], action[:, t]], dim=-1) # [B, D]
-                if t == 0:
-                    agent_depth_out = self.get_agent_depth_init(depth_inpt)
-                    agent_depth_first_loc, agent_depth_first_scale = torch.split(agent_depth_out, [ARCH.Z_DEPTH_DIM] * 2, dim=-1)
-                    agent_depth_raw_dist_first = Normal(agent_depth_first_loc, agent_depth_first_scale)
-                    agent_depth_raw = agent_depth_raw_dist_first.rsample()
-                    agent_depth_raw_first_prior = Normal(0, 1)
-                    agent_dpeth_raw_first_kl = kl_divergence(agent_depth_raw_dist_first, agent_depth_raw_first_prior) # [B, 1]
-                    agent_depth_raw_list_kl.append(agent_dpeth_raw_first_kl)
-                else:
-                    agent_depth_out = self.get_agent_depth(depth_inpt)
-                    agent_depth_loc, agent_depth_scale, agent_depth_gate = torch.split(agent_depth_out, [ARCH.Z_DEPTH_DIM] * 3, dim=-1)
-                    agent_depth_raw_dist = Normal(agent_depth_loc, agent_depth_scale)
-                    agent_depth_raw = agent_depth_raw_dist.rsample()
-                    agent_depth_gate = torch.sigmoid(agent_depth_gate)
-                    agent_depth_raw = agent_depth_raw_prev + ARCH.Z_DEPTH_UPDATE_SCALE * agent_depth_gate * agent_depth_raw # [B, D, 1]
-
-                agent_depth_raw_list.append(agent_depth_raw)
-                agent_depth_raw_prev = agent_depth_raw
                 # End of temporal loop
 
         if leverage:
@@ -862,8 +825,6 @@ class MixtureModule(nn.Module):
             'z_comps': torch.stack(z_comps_t, dim=1),  # (B, T, K, Zc)
             'bg': torch.stack(bgs, dim=1),  # (B, T, 3, H, W)
             'kl_bg': torch.stack(kl_bg, dim=1),  # (B, T),
-            'agent_depth_raw': torch.stack(agent_depth_raw_list, dim=1), # [B, T, 1]
-            'agent_depth_raw_kl': torch.stack(agent_depth_raw_list_kl, dim=1), # [B, T, 1]
             # 'neg_kl_bg_agent': torch.stack(bg_agent_neg_kls_t, dim=1),  # (B, T)
             # TODO (chmin): check if which of posterior or prior should be given
             'h_masks_post': torch.stack(h_masks_t, dim=1), # [B, T, K, Hm]
@@ -872,9 +833,7 @@ class MixtureModule(nn.Module):
             'c_comps_post': torch.stack(c_comps_t, dim=1), # [B, T, K, Hc]
             'enhanced_act': action,
             'mask_residuals': torch.stack(res_m_latents_t, dim=1),
-            'mask_scales': torch.stack(res_m_scales_t, dim=1),
             'comp_residuals': torch.stack(res_c_latents_t, dim=1),
-            'comp_scales': torch.stack(res_c_scales_t, dim=1),
             'mask_inputs_prior': torch.stack(mask_inputs_prior_t, dim=1), # [B, T, K, Zm]
             'comp_inputs_prior': torch.stack(comp_inputs_prior_t, dim=1) # [B, T, K, Zc]
         }
@@ -1265,17 +1224,14 @@ class MixtureModule(nn.Module):
             z_mask = z_mask_prior.rsample()
             # for t >= 1; residual update of the mask 
             if z_masks_prev is not None:
-                res_m_latent, res_m_scale = torch.split(self.mask_residual_update(torch.cat([z_masks_prev[:, k], z_mask], dim=-1)),
-                    2 * [ARCH.Z_MASK_DIM], dim=-1) 
-                z_mask = torch.add(z_masks_prev[:, k], 2.0 * torch.nn.Hardsigmoid()(res_m_scale) * res_m_latent)
+                res_m_latent = self.mask_residual_update(torch.cat([z_masks_prev[:, k], z_mask], dim=-1))
+                z_mask = torch.add(z_masks_prev[:, k], ARCH.RESIDUAL_SCALE * res_m_latent)
             z_masks.append(z_mask)
             z_mask_k_prev = z_mask # for autoregressive update
             # condition action for decoding (cVAE scheme)
             z_mask = self.mask_cond_dec(torch.cat([z_mask, action], dim=-1))
             with torch.no_grad():
                 mask = self.mask_decoder(z_mask) # In - [B * T, Zm], Out - [B * T, 1, H, W]
-            # if k != agent_slot:
-            #     mask = mask.detach()
             masks.append(mask)
 
             # input for the autoregressive update of a mask.
@@ -1290,16 +1246,14 @@ class MixtureModule(nn.Module):
             z_comp = z_comp_prior.rsample()
 
             if z_comps_prev is not None:
-                res_c_latent, res_c_scale = torch.split(self.comp_residual_update(torch.cat([z_comps_prev[:, k], z_comp], dim=-1)),
-                    2 * [ARCH.Z_COMP_DIM], dim=-1)
-                z_comp = torch.add(z_comps_prev[:, k], 2.0 * torch.nn.Hardsigmoid()(res_c_scale) * res_c_latent)
+                res_c_latent = self.comp_residual_update(torch.cat([z_comps_prev[:, k], z_comp], dim=-1))
+                z_comp = torch.add(z_comps_prev[:, k], ARCH.RESIDUAL_SCALE * res_c_latent)
                 z_comps.append(z_comp)
 
         # temporal concat of the mask and comp latents
         z_masks_cat = torch.stack(z_masks, dim=1) # [B*T, K, Zm]
         z_comps_cat = torch.stack(z_comps, dim=1) # [B*T, K, Zc]
         # [BT, K, 1, H, W] in range (0, 1)
-        # with torch.no_grad():
         masks = torch.stack(masks, dim=1)
         B, K, _, H, W = masks.size() 
 
@@ -1338,7 +1292,7 @@ class MixtureModule(nn.Module):
         temp_mask_inpt = temp_mask_inpt.view(B * ARCH.K, -1)
         # encode the two inputs into one: [B, K, D + Zm] -> [B, K, Zm]
         temp_mask_inpt = self.obs_mask_enc_fn(temp_mask_inpt)
-        #   tkfkdgo
+
         # temporal update of rnn hidden states of mask prior and posterior
         h_masks_t_prior, c_masks_t_prior = self.rnn_mask_t_prior(temp_mask_inpt, (h_masks_t_prior, c_masks_t_prior))
 
@@ -1354,22 +1308,10 @@ class MixtureModule(nn.Module):
 
         # temporal update of rnn hiddeen states 
         h_comps_t_prior, c_comps_t_prior = self.rnn_comp_t_prior(temp_comp_inpt, (h_comps_t_prior, c_comps_t_prior))
-        h_masks_t_prior_reshaped = h_comps_t_prior.reshape(B, ARCH.K, -1)
-        depth_inpt = torch.cat([z_masks_cat[:, agent_slot], h_masks_t_prior_reshaped[:, agent_slot], action], dim=-1) # [1, D]
-        agent_depth_out = self.get_agent_depth(depth_inpt)
-        agent_depth_loc, agent_depth_scale, agent_depth_gate = torch.split(agent_depth_out, [ARCH.Z_DEPTH_DIM] * 3, dim=-1)
-        agent_depth_raw_dist = Normal(agent_depth_loc, agent_depth_scale)
-        agent_depth_raw = agent_depth_raw_dist.rsample()
-        agent_depth_gate = torch.sigmoid(agent_depth_gate)
-        agent_depth_raw = self.agent_depth_raw_prev + ARCH.Z_DEPTH_UPDATE_SCALE * agent_depth_gate * agent_depth_raw # [B, D, 1]
 
-        setattr(self, 'agent_depth_raw_prev', agent_depth_raw)
-
-        # TODO (chmin): figure out what to return.
         things = {
             'z_comps': z_comps_cat, # [B*T, K, 32]
             'z_masks': z_masks_cat, # [B*T, K, 16],
-            'agent_depth_raw': agent_depth_raw, # [B*T, 1],
             'h_mask_prior': h_masks_t_prior.reshape(B, K, -1), # [B*T, K, 32]
             'c_mask_prior': c_masks_t_prior.reshape(B, K, -1), # [B*T, K, 32]
             'h_comp_prior': h_comps_t_prior.reshape(B, K, -1), # [B*T, K, 64]
@@ -1378,6 +1320,7 @@ class MixtureModule(nn.Module):
             'bg' : bg, # [B*T, 3, 64, 64]
             'enhanced_act': action # [B*T, A]
         }
+        
         return things
 
 
