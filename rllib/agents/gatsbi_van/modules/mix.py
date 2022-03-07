@@ -262,10 +262,6 @@ class MixtureModule(nn.Module):
         enc = self.enc_fc(enc)
         enc = enc.view(B, ARCH.IMG_ENC_DIM) # [B, 128]
 
-        if first:
-            setattr(self, 'agent_depth_raw_prev', torch.zeros(B, 1).to(obs.device))
-
-        # TODO (Chmin)
         if episodic_step == 0:
             enc = self.cond_obs_cat_encoder(enc.clone().repeat(1, 5))
 
@@ -865,7 +861,6 @@ class MixtureModule(nn.Module):
         enc = self.enc_fc(enc)  # [B, T, 128]
         enc = enc.view(B, T, ARCH.IMG_ENC_DIM)  # [B, T, 128]
         
-        # TODO (chmin): first step inference should be 
         obs_cat_enc = self.cond_obs_cat_encoder(enc[:, :5].view(B, 5 * ARCH.IMG_ENC_DIM))
 
         # mask and component latents over the K slots.

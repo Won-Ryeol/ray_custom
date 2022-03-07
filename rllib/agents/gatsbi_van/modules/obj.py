@@ -302,7 +302,6 @@ class ObjModule(nn.Module):
             = self.discover(x, z_prop, mix, self.start_id, z_agent, h_agent, enhanced_act)
         else: # Do not conduct discovery
             state_post_disc, state_prior_disc, z_disc, ids_disc = self.get_dummy_things(B, obs.device)
-            z_occ_disc = torch.zeros(B, ARCH.MAX, 1).to(obs.device)
             
         # Combine discovered and propagated things, and sort by p(z_pres)
         state_post, state_prior, z, ids, proposal = self.combine(
@@ -311,7 +310,6 @@ class ObjModule(nn.Module):
         )
 
         fg, alpha_map, _importance_map, y_att, alpha_att_hat = self.render(z)
-        # TODO (chmin): verify this.
         self.start_id = ids.max(dim=1)[0] + 1
         
         things = dict(

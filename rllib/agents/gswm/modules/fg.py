@@ -1,3 +1,4 @@
+from unittest import TestResult
 import torch
 import random
 import numpy as np
@@ -132,6 +133,10 @@ class FgModule(nn.Module):
         self.temporal_rnn_prior = BatchApply(nn.LSTMCell(
             ARCH.RNN_INPUT_DIM,
             ARCH.RNN_HIDDEN_DIM))
+
+        # additional parameters for agent learning.
+        self.start_id = torch.zeros(1).long()
+        self.global_step = 0
     
     def anneal(self, global_step):
         self.tau = anneal(global_step, ARCH.TAU_START_STEP, ARCH.TAU_END_STEP,
@@ -251,6 +256,77 @@ class FgModule(nn.Module):
         things = {k: torch.stack(v, dim=1) for k, v in things.items()}
         return things
     
+    def infer(self, history, obs, bg, discovery_dropout, enhanced_act, 
+            first=False, episodic_step=0):
+        """
+        Doing tracking
+        Args:
+            seq: (B, T, C, H, W)
+            bg: (B, T, C, H, W)
+            discovery_dropout: (0, 1)
+
+        Returns:
+            A dictionary. Everything will be (B, T, ...). Refer to things_t.
+        """
+        B, C, H, W = obs.size()
+
+        stop_discover = False
+        if episodic_step is not None and episodic_step > 100:
+            stop_discover = True
+
+        z_pres, z_depth, z_where, z_what, z_dyna, h_obj, c_obj, ids = history
+
+        z = (z_pres, z_depth, z_where, z_what, z_dyna)
+        state_post = [h_obj, c_obj]
+
+        start_id = torch.zeros(B, device=obs.device).long()
+        
+
+        #? do we use state_prior here?
+        state_prior = [torch.zeros(B, ARCH.MAX, ARCH.RNN_HIDDEN_DIM, device=obs.device), \
+                torch.zeros(B, ARCH.MAX, ARCH.RNN_HIDDEN_DIM, device=obs.device)]
+
+        things = defaultdict(list)
+
+        if first:
+            self.start_id = torch.zeros(B, device=obs.device).long()
+
+        x = obs  # (B, 3, H, W)
+        # Update object states
+        state_post_prop, state_prior_prop, z_prop, _, proposal = self.propagate(x, state_post, 
+        state_prior, z, bg)
+        ids_prop = ids
+        if first or torch.rand(1) > discovery_dropout:
+            state_post_disc, state_prior_disc, z_disc, ids_disc, _ = self.discover(x, 
+            z_prop, bg, self.start_id)
+        else:
+            state_post_disc, state_prior_disc, z_disc, ids_disc = self.get_dummy_things(B, obs.device)
+        
+        # Combine discovered and propagated things
+        state_post, state_prior, z, ids, proposal = self.combine(
+            state_post_disc, state_prior_disc, z_disc, ids_disc, z_disc[2],
+            state_post_prop, state_prior_prop, z_prop, ids_prop, proposal
+        )
+
+        fg, alpha_map = self.render(z)
+        self.start_id = ids.max(dim=1)[0] + 1
+        
+        things = dict(
+            z_pres=z[0],  # (B, N, 1)
+            z_depth=z[1],  # (B, N, 1)
+            z_where=z[2],  # (B, N, 4)
+            z_what=z[3],  # (B, N, D)
+            z_dyna=z[4],  # (B, N, D)
+            ids=ids,  # (B, N)
+            fg=fg,  # (B, C, H, W)
+            proposal=proposal,  # (B, N, 4)
+            alpha_map=alpha_map,  # (B, 1, H, W)
+            z_objs=z,
+            h_c_objs=state_post # [B, N, H] # RNN hidden state of the object.
+        )
+        return things
+
+
     def generate(self, seq, bg, cond_steps, sample):
         """
         Generate new frames, given a set of input frames
@@ -312,7 +388,71 @@ class FgModule(nn.Module):
         
         things = {k: torch.stack(v, dim=1) for k, v in things.items()}
         return things
-    
+
+    def imagine(self, bg, history, z_prop, sample=True):
+        """
+        Generate new frames, given a set of input frames
+        Args:
+            seq: (B, T, 3, H, W)
+            bg: (B, T, 3, H, W), generated bg images
+            cond_steps: number of input steps
+            sample: bool, sample or take mean
+
+        Returns:
+            log
+        """
+        B,  *_ = bg.size()
+        
+        start_id = torch.zeros(B, device=seq.device).long()
+        state_post, state_prior, z, ids = self.get_dummy_things(B, seq.device)
+        
+        things = defaultdict(list)
+        for t in range(T):
+            
+            if t < cond_steps:
+                # Input, use posterior
+                x = seq[:, t]
+                # Tracking
+                state_post_prop, state_prior_prop, z_prop, kl_prop, proposal = self.propagate(x, state_post,
+                                                                                              state_prior, z, bg[:, t])
+                ids_prop = ids
+                if t == 0:
+                    state_post_disc, state_prior_disc, z_disc, ids_disc, kl_disc = self.discover(x, z_prop, bg[:, t],
+                                                                                                 start_id)
+                else:
+                    state_post_disc, state_prior_disc, z_disc, ids_disc = self.get_dummy_things(B, seq.device)
+            else:
+                # Generation, use prior
+                state_prior_prop, z_prop = self.propagate_gen(state_prior, z, bg[:, t], sample)
+                state_post_prop = state_prior_prop
+                ids_prop = ids
+                state_post_disc, state_prior_disc, z_disc, ids_disc = self.get_dummy_things(B, seq.device)
+            
+            state_post, state_prior, z, ids, proposal = self.combine(
+                state_post_disc, state_prior_disc, z_disc, ids_disc, z_disc[2],
+                state_post_prop, state_prior_prop, z_prop, ids_prop, proposal
+            )
+            
+            fg, alpha_map = self.render(z)
+            start_id = ids.max(dim=1)[0] + 1
+            things_t = dict(
+                z_pres=z[0],  # (B, N, 1)
+                z_depth=z[1],  # (B, N, 1)
+                z_where=z[2],  # (B, N, 4)
+                z_what=z[3],  # (B, N, D)
+                z_dyna=z[4],  # (B, N, D)
+                ids=ids,  # (B, N)
+                fg=fg,  # (B, C, H, W)
+                alpha_map=alpha_map  # (B, 1, H, W)
+            )
+            for key in things_t:
+                things[key].append(things_t[key])
+        
+        things = {k: torch.stack(v, dim=1) for k, v in things.items()}
+        return things
+
+
+
     def discover(self, x, z_prop, bg, start_id=0):
         """
         Given current image and propagated objects, discover new objects

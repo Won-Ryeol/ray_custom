@@ -19,17 +19,15 @@ from ray.rllib.agents.gswm.utils import Linear, TanhBijector
 # GSWM model related modules.
 
 # import GSWM vanilla related submodules.
-from ray.rllib.agents.gswm.modules.mix import *
-
+from ray.rllib.agents.gswm.modules.bg import *
 from ray.rllib.agents.gswm.modules.module import anneal
 from ray.rllib.agents.gswm.modules.arch import ARCH
-from ray.rllib.agents.gswm.modules.mix import MixtureModule
-from ray.rllib.agents.gswm.modules.obj import ObjModule
-from ray.rllib.agents.gswm.modules.keypoint import KeypointModule
+from ray.rllib.agents.gswm.modules.mix import BgModule
+from ray.rllib.agents.gswm.modules.fg import FgModule
 from ray.rllib.agents.gswm.modules.utils import bcolors
 
 from .utils import scale_action
-# import visualizer of training GATSBI.
+# import visualizer of training GSWM.
 from IQA_pytorch import SSIM
 
 ActFunc = Any
@@ -242,7 +240,7 @@ class ActionDecoder(nn.Module):
 class GSWMModel(TorchModelV2, nn.Module):
     def __init__(self, obs_space, action_space, num_outputs, model_config, name, agent_slot_idx=0):
         """
-            Vanilla version of GATSBI.
+            Vanilla version of GSWM.
             TODO (chmin): refactoring required after publication.
         """
         super().__init__(obs_space, action_space, num_outputs, 
@@ -258,18 +256,15 @@ class GSWMModel(TorchModelV2, nn.Module):
         self.T = ARCH.T[0]
         self.DETACHED_T = ARCH.DETACHED_T[0]
 
-        self.obj_module = ObjModule()
-        self.mixture_module = MixtureModule(action_dim=self.action_size)
-        self.keypoint_module = KeypointModule()
+        self.fg_module = FgModule()
+        # TODO (chmin): bg module should be action-conditioned.
+        self.bg_module = BgModule(action_dim=self.action_size)
 
-        #! vanilla gatsbi has no agent depth.
         # dimension of concatenation of structured latent variables.
         # [1, K * Zm + K * Zc + N * Z(w+w+p...) } + K * Hm + K * Hc + H(w+w+p...)]
 
-        # TODO (chmin): vanilla agent should not have deph!
-
-        self.feat_dim = (ARCH.K * ARCH.Z_MASK_DIM +   # agent mask
-                            2 + # agent pos + agent_depth
+        # Z_CTX_DIM describes the entangled agent and background.
+        self.feat_dim = (ARCH.Z_CTX_DIM + 
                             ARCH.MAX *(
                                 ARCH.Z_SHIFT_DIM +  # ao-rel-pos
                                 ARCH.Z_DEPTH_DIM +  # ao-rel-depth
@@ -277,8 +272,7 @@ class GSWMModel(TorchModelV2, nn.Module):
                             )
                         )
 
-        self.reward_feat_dim = (ARCH.K * ARCH.Z_MASK_DIM +   # agent mask
-                            2 + # agent pos + agent_depth
+        self.reward_feat_dim = (ARCH.Z_CTX_DIM +   # agent mask
                             ARCH.MAX *(
                                 ARCH.Z_SHIFT_DIM +  # ao-rel-pos
                                 ARCH.Z_DEPTH_DIM +  # ao-rel-depth
@@ -335,19 +329,13 @@ class GSWMModel(TorchModelV2, nn.Module):
                 1, 4, ARCH.DENSE_HIDDEN_DIM, act=nn.CELU,
                 sigma=ARCH.VALUE_SIGMA)
 
-        # TODO (chmin): let's leverage module list.
-        # self.subpolicies = nn.ModuleList([
-        #     SubPolicy(n_actions, obs_shape) for _ in range(n_subpolicies)
-        # ])
 
         self.state = None
         self.device = (torch.device("cuda") if torch.cuda.is_available()
                         else torch.device("cpu"))
 
-        # TODO(chmin): create the submodules 
 
-        self.reward_sub_feat_dim = (ARCH.K * ARCH.Z_MASK_DIM +   # agent mask
-                            2 + # agent pos + agent_depth
+        self.reward_sub_feat_dim = (ARCHZ_CTX_DIM +   # agent mask
                         ARCH.MAX * ARCH.Z_SHIFT_DIM +  # object-pos + rel-pos to others
                             ARCH.Z_DEPTH_DIM +  # ao-rel-depth
                             ARCH.Z_WHAT_DIM # object_shape
@@ -407,14 +395,6 @@ class GSWMModel(TorchModelV2, nn.Module):
         self.T = ARCH.T[i]
         self.DETACHED_T = ARCH.DETACHED_T[j]
 
-    def z_agent_mean_std(self, z_agent, eps=1e-3):
-        B, T, D = z_agent.size()
-        mean = z_agent.reshape(B*T, D).mean(0,keepdims=True)
-        std = z_agent.reshape(B*T, D).std(0,keepdims=True) + eps
-        self.z_agent_mean = mean
-        self.z_agent_std = std
-        return mean, std
-
     def random_crop(self, seq, T, start=False):
         """
             Sample a subsequence of length T
@@ -428,72 +408,44 @@ class GSWMModel(TorchModelV2, nn.Module):
             # action is given as a_{{t-1}:t_{t+T}} for action conditioning
             return seq[:, start:start + T], start
 
-    @torch.no_grad()
-    def find_agent_slot(self, kypt, masks, comps=None):
-        # kypt: [B, T, 1, H, W]
-        # masks: [B, T, K, 1, H, W]
-        # with torch.no_grad():
-        #     K = masks.size(2)
-        #     kypt = torch.stack([kypt] * K, dim=2)
-        #     crit = ((kypt > 0.8) * (masks > 0.8)).sum(-1).sum(-1).sum(-1)
-        #     tot = (masks > 0.8).sum(-1).sum(-1).sum(-1)
-        #     dist = crit / (tot + 1e-5)
-        #     _, si = torch.sort(dist, 2, descending=True)
-        #     si = si.float()    masks.reshape(-1, 1, 64, 64) 
-        #     first = int(si[..., 0].mean().round())  comps.reshape(-1, 3, 64, 64)
-        # return first kypt * comps[:, ]
-        B, T, K, _, H, W = masks.size()
-        comps = comps.reshape(B * T, K, 3, H, W)
-        masks = masks.reshape(B * T, K, 1, H, W)
-        kypt = kypt.reshape(B * T, 1, H, W)
-        criterion = SSIM(channels=1)
-        _, indices = torch.sort(torch.tensor([criterion(masks[:, k], kypt, as_loss=False).mean() 
-            for k in range(K)],device=masks.device), descending=True)
-        return int(indices[0])
-
-    def get_feature_for_agent(self, z_masks, z_comps, z_objs, 
+    def get_feature_for_agent(self, z_ctx, z_objs, 
             h_masks, h_comps, h_objs, action=None):
         """
             Constructs feature for input to reward, decoder, actor and critic.
             inputs consist of posterior history and stochastic latents of the scene.        
         """
         
-        agent_idx = self.agent_slot_idx
-        bg_indices = torch.tensor([k for k in range(ARCH.K) if k != agent_idx], device=z_masks.device).long()
-
         # process agent-obj depth and position
         obj_position = z_objs[..., ARCH.Z_PRES_DIM + ARCH.Z_DEPTH_DIM:ARCH.Z_PRES_DIM 
             + ARCH.Z_DEPTH_DIM + ARCH.Z_WHERE_DIM][..., 2:] # [B, (T), N, 2]
         obj_depth =  z_objs[..., ARCH.Z_PRES_DIM:ARCH.Z_PRES_DIM + ARCH.Z_DEPTH_DIM] # [B, (T), N, 2]
         obj_depth = torch.sigmoid(-obj_depth)  
-        # TODO (chmin): don't forget z_occ
 
-        z_agent = z_masks[..., agent_idx, :] # [B, T, Z]
-        z_bgs = z_masks[..., bg_indices, :]
-        h_agent = h_masks[..., agent_idx, :] # [B, T, H]
+        # TODO (chmin): here only z_ctx exists.
+
         obj_pres = z_objs[..., :1] # [B, T, N, 1]
         obj_scale = z_objs[..., ARCH.Z_PRES_DIM + ARCH.Z_DEPTH_DIM:ARCH.Z_PRES_DIM 
                 + ARCH.Z_DEPTH_DIM + ARCH.Z_WHERE_DIM][..., :2]  # [B, T, N, 2]
         obj_what = z_objs[..., ARCH.Z_PRES_DIM + ARCH.Z_DEPTH_DIM + ARCH.Z_WHERE_DIM:ARCH.Z_PRES_DIM 
                 + ARCH.Z_DEPTH_DIM + ARCH.Z_WHERE_DIM + ARCH.Z_WHAT_DIM] # [B, T, N, 16]
         # obj pres should be a scale parameter.
-        cat_latents = [z_agent, z_bgs, obj_depth, obj_position, obj_what] # [B, T, *]
+        cat_latents = [z_ctx, obj_depth, obj_position, obj_what] # [B, T, *]
 
         # latents_to_cat = [l for (m, l) in zip(cat_latents, latents) if m]     
-        if len(z_masks.size()) == 4:
+        if len(z_ctx.size()) == 4:
             B, T, K, _ = z_masks.size()
             _, _, N, _ = z_objs.size()
             latents_to_cat = [l.reshape(B, T, -1) for l in cat_latents]
             return torch.cat(latents_to_cat, dim=-1)
 
         else: #! used in policy inference
-            B, K, _ = z_masks.size()
+            B, K, _ = z_ctx.size()
             # squash the entity dimension [B, K * (Hm / Hc / Zm / Zc)]
             # [1, K * Zm + K * Zc + N * Z(w+w+p...) } + K * Hm + K * Hc + H(w+w+p...)]
             latents_to_cat = [l.reshape(B, -1) for l in cat_latents]
             return torch.cat(latents_to_cat, dim=-1)
 
-    def get_indiv_features(self, z_masks, z_comps, z_objs, 
+    def get_indiv_features(self, z_ctx, z_objs, 
             h_masks, h_comps, h_objs, action=None):
         """
             Constructs feature for input to reward, decoder, actor and critic.
@@ -508,10 +460,8 @@ class GSWMModel(TorchModelV2, nn.Module):
             + ARCH.Z_DEPTH_DIM + ARCH.Z_WHERE_DIM][..., 2:] # [B, (T), N, 2]
         obj_depth =  z_objs[..., ARCH.Z_PRES_DIM:ARCH.Z_PRES_DIM + ARCH.Z_DEPTH_DIM] # [B, (T), N, 2]
         obj_depth = torch.sigmoid(-obj_depth)  
-        # TODO (chmin): don't forget z_occ
+        # TODO (chmin): here only z_ctx exists.
 
-        z_agent = z_masks[..., agent_idx, :] # [B, T, Z]
-        z_bgs = z_masks[..., bg_indices, :]
         obj_scale = z_objs[..., ARCH.Z_PRES_DIM + ARCH.Z_DEPTH_DIM:ARCH.Z_PRES_DIM 
                 + ARCH.Z_DEPTH_DIM + ARCH.Z_WHERE_DIM][..., :2]  # [B, T, N, 2]
         obj_what = z_objs[..., ARCH.Z_PRES_DIM + ARCH.Z_DEPTH_DIM + ARCH.Z_WHERE_DIM:ARCH.Z_PRES_DIM 
@@ -524,17 +474,17 @@ class GSWMModel(TorchModelV2, nn.Module):
         for idx in range(ARCH.MAX):
             other_objs = list(obj_indices - {idx})
 
-            obj_wise_latents = [z_agent, z_bgs, 
+            obj_wise_latents = [z_ctx, 
                 obj_depth[..., idx, :], obj_position[..., idx, :], obj_what[..., idx, :],
                 obj_position[..., idx, :][..., None, :] - obj_position[..., other_objs, :]
             ]
             
-            if len(z_masks.size()) == 4:
-                B, T, K, _ = z_masks.size()
+            if len(z_ctx.size()) == 4:
+                B, T, K, _ = z_ctx.size()
                 _, _, N, _ = z_objs.size()
                 latents_to_cat = [l.reshape(B, T, -1) for l in obj_wise_latents]
             else: #! used in policy inference
-                B, K, _ = z_masks.size()
+                B, K, _ = z_ctx.size()
                 # squash the entity dimension [B, K * (Hm / Hc / Zm / Zc)]
                 # [1, K * Zm + K * Zc + N * Z(w+w+p...) } + K * Hm + K * Hc + H(w+w+p...)]
                 latents_to_cat = [l.reshape(B, -1) for l in obj_wise_latents]
@@ -578,37 +528,29 @@ class GSWMModel(TorchModelV2, nn.Module):
         else:
             self.state = state
         
-        post_mix = state[:6] # z_masks, z_comps, h_masks, c_masks,  h_comps, c_comps
-        post_obj = state[6:14] # z_objs, (where, what, ...). h_c_objs, ids
-        action = state[-2] # [B, A]
+        post_ctx = state[:3] # z_ctx, h_ctx, c_ctx
+        post_obj = state[3:-1] # z_objs, (where, what, ...). h_c_objs, ids
+        action = state[-1] # [B, A]
         action = scale_action(action)
         # posterior inference from RNN states.
         is_first_obs = not self.episodic_step or start_infer_flag 
 
-        mixture_out = self.mixture_module.infer(history=post_mix, obs=obs, action=action, 
-            episodic_step=self.episodic_step, first=is_first_obs, agent_slot=self.agent_slot_idx)
+        # TODO (chmin): "infer" of bgmodule should be implemented.
+        bg_out = self.bg_module.infer(history=post_ctx, obs=obs, action=action, 
+            episodic_step=self.episodic_step, first=is_first_obs)
 
-        obs_diff = obs - mixture_out['bg'] # [1, 3, 64, 64]
+        obs_diff = obs - bg_out['bg'] # [1, 3, 64, 64]
         inpt = torch.cat([obs, obs_diff], dim=1) # channel-wise concat
 
-        obj_out = self.obj_module.infer(history=post_obj, obs=inpt, mix=mixture_out['bg'],
+        fg_out = self.fg_module.infer(history=post_obj, obs=inpt, bg=bg_out['bg'],
             discovery_dropout=ARCH.DISCOVERY_DROPOUT,
-            z_agent=mixture_out['z_masks'][:, self.agent_slot_idx].detach(), # state of the agent.
-            h_agent=mixture_out['h_mask_post'][self.agent_slot_idx].detach(), # history of the agent
-            enhanced_act=mixture_out['enhanced_act'].detach(),
+            enhanced_act=bg_out['enhanced_act'].detach(),
             first=is_first_obs,
             episodic_step=self.episodic_step
-            )
+        )
         
-        # TODO (chmin): this feature goes for the high-level policy
-        feat = self.get_feature_for_agent(
-            mixture_out['z_masks'], mixture_out['z_comps'], torch.cat(obj_out['z_objs'], -1),
-            mixture_out['h_mask_post'][None], mixture_out['h_comp_post'][None], obj_out['h_c_objs'][0],
-            action=action)
+        feat = self.get_feature_for_agent(bg_out['z_ctx'], torch.cat(obj_out['z_objs'], -1))
 
-        # TODO (chmin): here comes the low-level action inference.
-
-        # obj_out['fg']   mixture_out['bg']
         if self.global_step < ARCH.JOINT_TRAIN_GSWM_START:
             action = 2.0 * torch.rand(1, self.action_space.shape[0]) - 1.0
             if action[0, 2] > 0 and self.episodic_step < 80:
@@ -626,13 +568,9 @@ class GSWMModel(TorchModelV2, nn.Module):
                     setattr(self, "sub_policy_idx", sub_policy_idx)
                     setattr(self, "sub_policy_idx_inpt", sub_policy_idx_inpt)
 
-                indiv_feats_list = self.get_indiv_features(
-                    mixture_out['z_masks'], mixture_out['z_comps'], torch.cat(obj_out['z_objs'], -1),
-                    mixture_out['h_mask_post'][None], mixture_out['h_comp_post'][None], obj_out['h_c_objs'][0],
-                    action=action)
+                indiv_feats_list = self.get_indiv_features(bg_out['z_ctx'], torch.cat(obj_out['z_objs'], -1))
 
                 # feature for low-level policy inferred by high-level actor.
-                # TODO (chmin): concat with this. 'sub_policy_idx_inpt'
                 low_level_feat = torch.cat([indiv_feats_list[self.sub_policy_idx], self.sub_policy_idx_inpt],dim=-1)
                 actor_low_dist = self.actor_low(low_level_feat)
                 if explore:
@@ -654,6 +592,75 @@ class GSWMModel(TorchModelV2, nn.Module):
 
         self.episodic_step += 1 # episodic increment
         return action, logp, self.state
+
+    def get_feature_for_agent(self, z_ctx, z_objs):
+
+        # process agent-obj depth and position
+        obj_position = z_objs[..., ARCH.Z_PRES_DIM + ARCH.Z_DEPTH_DIM:ARCH.Z_PRES_DIM 
+            + ARCH.Z_DEPTH_DIM + ARCH.Z_WHERE_DIM][..., 2:] # [B, (T), N, 2]
+        obj_depth =  z_objs[..., ARCH.Z_PRES_DIM:ARCH.Z_PRES_DIM + ARCH.Z_DEPTH_DIM] # [B, (T), N, 2]
+        obj_depth = torch.sigmoid(-obj_depth)  
+
+        obj_scale = z_objs[..., ARCH.Z_PRES_DIM + ARCH.Z_DEPTH_DIM:ARCH.Z_PRES_DIM 
+            + ARCH.Z_DEPTH_DIM + ARCH.Z_WHERE_DIM][..., :2]  # [B, T, N, 2]
+        obj_what = z_objs[..., ARCH.Z_PRES_DIM + ARCH.Z_DEPTH_DIM + ARCH.Z_WHERE_DIM:ARCH.Z_PRES_DIM 
+            + ARCH.Z_DEPTH_DIM + ARCH.Z_WHERE_DIM + ARCH.Z_WHAT_DIM] # [B, T, N, 16]
+        
+        cat_latents = [z_ctx, obj_depth, obj_position, obj_what] # [B, T, *]
+        if len(z_ctx.size()) == 4:
+            B, T, _ = z_ctx.size()
+            _, _, N, _ = z_objs.size()
+            latents_to_cat = [l.reshape(B, T, -1) for l in cat_latents]
+            return torch.cat(latents_to_cat, dim=-1)
+
+        else: #! used in policy inference
+            B, K, _ = z_ctx.size()
+            latents_to_cat = [l.reshape(B, -1) for l in cat_latents]
+            return torch.cat(latents_to_cat, dim=-1)
+
+    def get_indiv_features(self, z_ctx, z_objs, action=None):
+            """
+                Constructs feature for input to reward, decoder, actor and critic.
+                inputs consist of posterior history and stochastic latents of the scene.        
+            """
+
+            # process agent-obj depth and position
+            obj_position = z_objs[..., ARCH.Z_PRES_DIM + ARCH.Z_DEPTH_DIM:ARCH.Z_PRES_DIM 
+                + ARCH.Z_DEPTH_DIM + ARCH.Z_WHERE_DIM][..., 2:] # [B, (T), N, 2]
+            obj_depth =  z_objs[..., ARCH.Z_PRES_DIM:ARCH.Z_PRES_DIM + ARCH.Z_DEPTH_DIM] # [B, (T), N, 2]
+            obj_depth = torch.sigmoid(-obj_depth)  
+
+            obj_scale = z_objs[..., ARCH.Z_PRES_DIM + ARCH.Z_DEPTH_DIM:ARCH.Z_PRES_DIM 
+                    + ARCH.Z_DEPTH_DIM + ARCH.Z_WHERE_DIM][..., :2]  # [B, T, N, 2]
+            obj_what = z_objs[..., ARCH.Z_PRES_DIM + ARCH.Z_DEPTH_DIM + ARCH.Z_WHERE_DIM:ARCH.Z_PRES_DIM 
+                    + ARCH.Z_DEPTH_DIM + ARCH.Z_WHERE_DIM + ARCH.Z_WHAT_DIM] # [B, T, N, 16]
+            # obj pres should be a scale parameter.
+
+            latent_lists = []
+            obj_indices = {ind for ind in range(ARCH.MAX)}
+
+            for idx in range(ARCH.MAX):
+                other_objs = list(obj_indices - {idx})
+
+                obj_wise_latents = [z_ctx, 
+                    obj_depth[..., idx, :], obj_position[..., idx, :], obj_what[..., idx, :],
+                    obj_position[..., idx, :][..., None, :] - obj_position[..., other_objs, :]
+                ]
+                
+                if len(z_masks.size()) == 4:
+                    B, T, K, _ = z_masks.size()
+                    _, _, N, _ = z_objs.size()
+                    latents_to_cat = [l.reshape(B, T, -1) for l in obj_wise_latents]
+                else: #! used in policy inference
+                    B, K, _ = z_masks.size()
+                    # squash the entity dimension [B, K * (Hm / Hc / Zm / Zc)]
+                    # [1, K * Zm + K * Zc + N * Z(w+w+p...) } + K * Hm + K * Hc + H(w+w+p...)]
+                    latents_to_cat = [l.reshape(B, -1) for l in obj_wise_latents]
+
+                obj_wise_latents =  torch.cat(latents_to_cat, dim=-1)
+                latent_lists.append(obj_wise_latents)
+
+            return latent_lists
 
     def imagine_ahead(self, deter_states, sto_states, imagine_horizon, action, raw_action):
         """ Generate imagined frames given the RNN state of masks and comps.

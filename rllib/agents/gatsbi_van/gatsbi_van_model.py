@@ -463,7 +463,6 @@ class GATSBIVanModel(TorchModelV2, nn.Module):
             + ARCH.Z_DEPTH_DIM + ARCH.Z_WHERE_DIM][..., 2:] # [B, (T), N, 2]
         obj_depth =  z_objs[..., ARCH.Z_PRES_DIM:ARCH.Z_PRES_DIM + ARCH.Z_DEPTH_DIM] # [B, (T), N, 2]
         obj_depth = torch.sigmoid(-obj_depth)  
-        # TODO (chmin): don't forget z_occ
 
         z_agent = z_masks[..., agent_idx, :] # [B, T, Z]
         z_bgs = z_masks[..., bg_indices, :]
@@ -577,7 +576,7 @@ class GATSBIVanModel(TorchModelV2, nn.Module):
         
         post_mix = state[:6] # z_masks, z_comps, h_masks, c_masks,  h_comps, c_comps
         post_obj = state[6:14] # z_objs, (where, what, ...). h_c_objs, ids
-        action = state[-2] # [B, A]
+        action = state[-1] # [B, A]
         action = scale_action(action)
         # posterior inference from RNN states.
         is_first_obs = not self.episodic_step or start_infer_flag 
