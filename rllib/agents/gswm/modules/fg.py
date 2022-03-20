@@ -405,56 +405,30 @@ class FgModule(nn.Module):
         state_prior = history
         z, ids, proposal = z_prop
 
-
-        start_id = torch.zeros(B, device=seq.device).long()
-        state_post, state_prior, z, ids = self.get_dummy_things(B, seq.device)
-        
         things = defaultdict(list)
-        for t in range(T):
-            
-            if t < cond_steps:
-                # Input, use posterior
-                x = seq[:, t]
-                # Tracking
-                state_post_prop, state_prior_prop, z_prop, kl_prop, proposal = self.propagate(x, state_post,
-                                                                                              state_prior, z, bg[:, t])
-                ids_prop = ids
-                if t == 0:
-                    state_post_disc, state_prior_disc, z_disc, ids_disc, kl_disc = self.discover(x, z_prop, bg[:, t],
-                                                                                                 start_id)
-                else:
-                    state_post_disc, state_prior_disc, z_disc, ids_disc = self.get_dummy_things(B, seq.device)
-            else:
-                # Generation, use prior
-                state_prior_prop, z_prop = self.propagate_gen(state_prior, z, bg[:, t], sample)
-                state_post_prop = state_prior_prop
-                ids_prop = ids
-                state_post_disc, state_prior_disc, z_disc, ids_disc = self.get_dummy_things(B, seq.device)
-            
-            state_post, state_prior, z, ids, proposal = self.combine(
-                state_post_disc, state_prior_disc, z_disc, ids_disc, z_disc[2],
-                state_post_prop, state_prior_prop, z_prop, ids_prop, proposal
-            )
-            
-            fg, alpha_map = self.render(z)
-            start_id = ids.max(dim=1)[0] + 1
-            things_t = dict(
-                z_pres=z[0],  # (B, N, 1)
-                z_depth=z[1],  # (B, N, 1)
-                z_where=z[2],  # (B, N, 4)
-                z_what=z[3],  # (B, N, D)
-                z_dyna=z[4],  # (B, N, D)
-                ids=ids,  # (B, N)
-                fg=fg,  # (B, C, H, W)
-                alpha_map=alpha_map  # (B, 1, H, W)
-            )
-            for key in things_t:
-                things[key].append(things_t[key])
+
+        state_prior_prop, z_prop = self.propagate_gen(state_prior, z, bg[:, t], sample)
+        state_post_prop = state_prior_prop
+        ids_prop = ids
+        state_post_disc, state_prior_disc, z_disc, ids_disc = self.get_dummy_things(B, seq.device)
         
-        things = {k: torch.stack(v, dim=1) for k, v in things.items()}
+        state_post, state_prior, z, ids, proposal = self.combine(
+            state_post_disc, state_prior_disc, z_disc, ids_disc, z_disc[2],
+            state_post_prop, state_prior_prop, z_prop, ids_prop, proposal
+        )
+            
+        things = dict(
+            z_pres=z[0], # [B*T, N, 1]
+            z_depth=z[1], # [B*T, N, 1]
+            z_where=z[2], 
+            z_what=z[3], 
+            z_dyna=z[4],
+            z_objs=torch.cat(z, dim=-1), # [B*T, N, 6 + 2D + 1]
+            ids=ids, # [B*T, N]
+            proposal=proposal, # [B*T, N, 4]
+            h_c_objs=state_prior, # tuple of LSTM states
+        )
         return things
-
-
 
     def discover(self, x, z_prop, bg, start_id=0):
         """

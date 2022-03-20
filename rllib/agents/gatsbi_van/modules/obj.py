@@ -612,7 +612,7 @@ class ObjModule(nn.Module):
         state_post_prop = state_prior_prop
 
         state_post, state_prior, z, ids, proposal = self.combine(
-            state_post_disc, state_prior_disc, z_disc, ids_disc, z_disc[2]
+            state_post_disc, state_prior_disc, z_disc, ids_disc, z_disc[2],
             state_post_prop, state_prior_prop, z_prop, ids_prop, proposal
         )
         start_id = ids.max(dim=1)[0] + 1 

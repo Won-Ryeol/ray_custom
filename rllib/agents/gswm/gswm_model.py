@@ -738,33 +738,32 @@ class GSWMModel(TorchModelV2, nn.Module):
             del features
             del indiv_feats_list
 
-            mixture_out = self.bg_module.imagine(
+            bg_out = self.bg_module.imagine(
                 history=(h_ctx_prior, c_ctx_prior),
                 action=action, # action from the previous step
                 z_prevs=z_ctx_prior,
                 episodic_step=cur_horizon
                 ) #
 
-            obj_out = self.fg_module.imagine(
-                mix=mixture_out['bg'].detach(), # [B*T, 3, 64, 64], object motion is deterministic.
+            fg_out = self.fg_module.imagine(
+                mix=bg_out['bg'].detach(), # [B*T, 3, 64, 64], object motion is deterministic.
                 history=(h_objs_prior, c_objs_prior), # [B*T, N, D]
                 z_prop=((z_pres_prior, z_depth_prior, z_where_prior, z_what_prior, z_dyna_prior),
                          ids_prior, proposal) # [B*T, N,]
                 )
 
-            deter_states = (mixture_out['h_mask_prior'], mixture_out['c_mask_prior'], mixture_out['h_comp_prior'],
-                mixture_out['c_comp_prior'], obj_out['h_c_objs'][0], obj_out['h_c_objs'][1]
+            deter_states = (
+                bg_out['h_prior'], bg_out['c_prior'], fg_out['h_c_objs'][0], fg_out['h_c_objs'][1]
             )
 
-            sto_states = (mixture_out['z_masks'], mixture_out['z_comps'], obj_out['z_objs'],
-                obj_out['ids'], obj_out['proposal'])
+            sto_states = (bg_out['z_ctx'], fg_out['z_objs'],
+                fg_out['ids'], fg_out['proposal'])
 
-            del mixture_out
-            del obj_out
+            del bg_out
+            del fg_out
 
-            return deter_states, sto_states, pre_act_action, action, self.sub_policy_ind, \
-                self.sub_policy_ind_inpt, low_actor_entropy
-        
+            return deter_states, sto_states, pre_act_action, action
+
         # execute imagination rollout.
         sto_last, deter_last = sto_start, deter_start
 
@@ -801,14 +800,10 @@ class GSWMModel(TorchModelV2, nn.Module):
 
         # imag feat has both gradient for high- and low- level policies.
         imag_feat = self.get_feature_for_agent(
-            sto_outputs[0], sto_outputs[1], sto_outputs[2],
-            deter_outputs[0], deter_outputs[2], deter_outputs[4],
-            aux=aux_info, action=raw_action)
+            sto_outputs[0], sto_outputs[1])
 
         indiv_latent_lists = self.get_indiv_features(
-            sto_outputs[0], sto_outputs[1], sto_outputs[2],
-            deter_outputs[0], deter_outputs[2], deter_outputs[4],
-            aux=aux_info, action=raw_action
+            sto_outputs[0], sto_outputs[1]
         )
         
         return imag_feat, preact_action, raw_action, indiv_latent_lists, \

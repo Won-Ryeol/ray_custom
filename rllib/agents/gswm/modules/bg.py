@@ -173,7 +173,7 @@ class BgModule(nn.Module):
         loc, scale = torch.chunk(params, 2, dim=-1)
         scale = F.softplus(scale) + 1e-4
         z_ctx_prior = Normal(loc, scale)
-        z_ctx = z_ctx_prior.sample() if sample else loc
+        z_ctx = z_ctx_prior.sample()
         h_prior, c_prior = self.rnn_prior(z_ctx, (h_prior, c_prior))
 
         bg = self.dec(
