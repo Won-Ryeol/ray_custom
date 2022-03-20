@@ -402,7 +402,10 @@ class FgModule(nn.Module):
             log
         """
         B,  *_ = bg.size()
-        
+        state_prior = history
+        z, ids, proposal = z_prop
+
+
         start_id = torch.zeros(B, device=seq.device).long()
         state_post, state_prior, z, ids = self.get_dummy_things(B, seq.device)
         

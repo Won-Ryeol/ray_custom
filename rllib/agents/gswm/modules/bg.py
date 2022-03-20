@@ -71,8 +71,6 @@ class BgModule(nn.Module):
         )
 
 
-
-
     def forward(self, seq):
         return self.encode(seq)
     
@@ -153,7 +151,7 @@ class BgModule(nn.Module):
         
         return things
 
-    def imagine(self, history, z_prevs, episodic_step=0):
+    def imagine(self, history, action, z_prevs, episodic_step=0):
         """
             single step generation of imagined trajectory of the agent.
         """
@@ -183,7 +181,7 @@ class BgModule(nn.Module):
             self.dec_fc(z_ctx).
                 view(B, 128, self.embed_size, self.embed_size)
         )
-        bg = bg.view(B, 3, H, W)
+        bg = bg.view(B, 3, 64, 64)
 
         things = {
             'bg' : bg, # [B, 3, 64, 64]

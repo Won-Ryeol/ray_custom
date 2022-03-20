@@ -265,7 +265,7 @@ def compute_gswm_loss(obs,
                 for reward_params in list(model.reward.parameters()) + list(model.sub_reward.parameters()):
                     reward_params.requires_grad_(True)
 
-            if not list(model.mixture_module.parameters())[0].requires_grad:
+            if not list(model.bg_module.parameters())[0].requires_grad:
                 for gswm_params in list(
                         set(model.parameters()) - set(model.actor_high.parameters()) - \
                         set(model.value1_high.parameters()) - set(model.value2_high.parameters()) - set(
@@ -281,7 +281,7 @@ def compute_gswm_loss(obs,
                 ac_params.requires_grad_(False)
 
         #* representation models should be trained.
-        if not list(model.mixture_module.parameters())[0].requires_grad:
+        if not list(model.bg_module.parameters())[0].requires_grad:
             for gswm_params in list(
                     set(model.parameters()) - set(model.actor_high.parameters()) - \
                     set(model.value1_high.parameters()) - set(model.value2_high.parameters()) - set(
@@ -299,6 +299,7 @@ def compute_gswm_loss(obs,
         print(bcolors.OKBLUE + "Making visualization ...")
         # visualize the whole episode
         with torch.no_grad():
+            # implement log_summary of gswm.
             log_gif = log_summary(model=model, batch=(eval_obs, eval_action),
                 global_step=model.global_step, indices=ARCH.INDICES, device=obs.device,
                 cond_steps=ARCH.COND_STEPS, fg_sample=ARCH.FG_SAMPLE, bg_sample=ARCH.BG_SAMPLE, 
@@ -326,7 +327,7 @@ def compute_gswm_loss(obs,
     device = (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
     model.step() # make increment for global_step
     # https://discuss.pytorch.org/t/how-to-freeze-bn-layers-while-training-the-rest-of-network-mean-and-var-wont-freeze/89736/9
-    # obs.reshape(-1, 3, 64, 64)
+
     if ARCH.TRAIN_LONG_TERM and model.global_step >= ARCH.TRAIN_LONG_TERM_FROM and model.global_step < ARCH.JOINT_TRAIN_GATSBI_START:
         # vanilla gatsbi do not leverage noisy rnn states.
         leverage = False
@@ -352,61 +353,34 @@ def compute_gswm_loss(obs,
 
     raw_action = action.clone()[:, detached_timesteps:]
 
-    #* mixture module.
-    mixture_out = model.mixture_module.encode(
-        seq=obs, action=action, agent_idx=model.agent_slot_idx,
-        leverage=leverage, model_T=model.T)       
+    #* bg module.
+    bg_out = model.bg_module.encode(
+        seq=obs, action=action, model_T=model.T)       
     # used for generating pseudo mask and bg regularization
-    obs_diff = obs - mixture_out['bg']
+    obs_diff = obs - bg_out['bg']
     inpt = torch.cat([obs, obs_diff], dim=2)
 
     #* do action enhance or not.
     A = action.size(-1)
     if model.global_step < ARCH.KYPT_MIX_JOINT_UNTIL: 
-        action = mixture_out['enhanced_act']
+        action = bg_out['enhanced_act']
     else:
-        action = mixture_out['enhanced_act'].detach()
-    # prepare for the policy loss.
-    #* keypoint module
-    if model.global_step < ARCH.JOINT_TRAIN_GATSBI_START:
-        kypt_out = model.keypoint_module.predict_keypoints(obs, action, model.global_step,
-            leverage=leverage, model_T=model.T)
-    else:
-        with torch.no_grad():
-            kypt_out = model.keypoint_module.predict_keypoints(obs, action, model.global_step,
-                leverage=leverage, model_T=model.T)
-
-    if not model.slot_find_flag and model.global_step >= ARCH.MODULE_TRAINING_SCHEME[1]:
-        model.slot_find_flag = True
-        # find the agent slot from the masks using the keypoint map 
-        model.agent_slot_idx = model.find_agent_slot(kypt_out['gaussian_maps'].detach(), 
-            mixture_out['masks'].detach(),
-            mixture_out['comps'].detach()
-            )
-        print(bcolors.WARNING + "AGENT SLOT IS FOUND AS {0}".format(model.agent_slot_idx))
-        print('============================='+ bcolors.ENDC)
+        action = bg_out['enhanced_act'].detach()
 
     #* object module
-    obj_out = model.obj_module.track(obs = inpt, mix = mixture_out['bg'],
-        discovery_dropout = ARCH.DISCOVERY_DROPOUT,
-        z_agent = mixture_out['z_masks'][:, :, model.agent_slot_idx].detach(), # state of the agent.
-        h_agent = mixture_out['h_masks_post'][:, :, model.agent_slot_idx].detach(), # history of the agent
-        enhanced_act = mixture_out['enhanced_act'].detach(),
-        agent_mask = mixture_out['masks'][:, :,model.agent_slot_idx].detach(),
-        leverage = leverage, model_T=model.T
-    )
+    fg_out = model.fg_module.track(seq = inpt, bg = bg_out['bg'],
+        discovery_dropout = ARCH.DISCOVERY_DROPOUT)
 
-    B, T, N, D = obj_out['z_where'].size()
-    _, _, K, _ = kypt_out['obs_kypts'].size()
+    B, T, N, D = fg_out['z_where'].size()
 
     #* fg and bg recons and kl divs for computing elbo.
-    fg = obj_out['fg'] # [B, T, 3, H, W] 
-    bg = mixture_out['bg'] # [B, T, 3, H, W] 
+    fg = fg_out['fg'] # [B, T, 3, H, W] 
+    bg = bg_out['bg'] # [B, T, 3, H, W] 
     # [B, T] -> [B, ]
-    kl_fg = obj_out['kl_fg'][:, detached_timesteps:].sum(-1)
-    kl_bg = ARCH.BG_KL_SCALE * mixture_out['kl_bg'][:, detached_timesteps:].sum(-1)
+    kl_fg = fg_out['kl_fg'][:, detached_timesteps:].sum(-1)
+    kl_bg = ARCH.BG_KL_SCALE * bg_out['kl_bg'][:, detached_timesteps:].sum(-1)
 
-    alpha_map = obj_out['alpha_map'] # [B, T, 1, H, W]
+    alpha_map = fg_out['alpha_map'] # [B, T, 1, H, W]
     if model.global_step < ARCH.FIX_ALPHA_STEPS:
         center_point = torch.cat([torch.zeros(B * T, 1, 2), torch.ones(B * T, 1, 1)], 
             dim=-1).to(obs.device) # [B * T, 1, 3]
@@ -445,7 +419,7 @@ def compute_gswm_loss(obs,
 
     #* object discovery encoding regularization loss. the scale of prop_map and x_enc should be similar 
     #* shape of discovery map: [B, D, G, G] 
-    obj_disc_scale = torch.norm(obj_out['disc_prop_map'][:, detached_timesteps:], p=2, dim=2).sum([1, 2, 3]).mean(0) / ARCH.T[0]
+    obj_disc_scale = torch.norm(fg_out['disc_prop_map'][:, detached_timesteps:], p=2, dim=2).sum([1, 2, 3]).mean(0) / ARCH.T[0]
 
     if not hasattr(model, "obj_disc_scale_rm"):
         setattr(model, "obj_disc_scale_rm", obj_disc_scale.detach())
