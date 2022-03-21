@@ -292,7 +292,7 @@ class BgModule(nn.Module):
         
         return things
     
-    def generate(self, seq, cond_steps, action, sample):
+    def generate(self, seq, action, cond_steps, sample=True):
         """
         Generate new frames given a set of input frames
         Args:

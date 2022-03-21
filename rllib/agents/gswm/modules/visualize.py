@@ -59,47 +59,24 @@ def  show_tracking_batch(model, obs, action, num):
     if isinstance(model, nn.DataParallel):
         model = model.module
     model.eval()
-    mixture_out = model.mixture_module.encode(
+    bg_out = model.bg_module.encode(
         seq=obs, action=action) # [B, T, 3, 64, 64],
-
-    obs_diff = obs - mixture_out['bg'] # [0]
+    obs_diff = obs - bg_out['bg'] # [0]
 
     inpt = torch.cat([obs, obs_diff], dim=2)
-    kypt_out = model.keypoint_module.predict_keypoints(obs, mixture_out['enhanced_act'])
-
-    obj_out = model.obj_module.track(obs=inpt, mix=mixture_out['bg'],
+    fg_out = model.fg_module.track(seq=inpt, bg=bg_out['bg'],
         discovery_dropout=ARCH.DISCOVERY_DROPOUT,
-        z_agent=mixture_out['z_masks'][:, :, model.agent_slot_idx], # state of the agent
-        h_agent=mixture_out['h_masks_post'][:, :, model.agent_slot_idx].detach(), # history of the agent
-        enhanced_act=mixture_out['enhanced_act'].detach(),
-        agent_mask=mixture_out['masks'][:, :,model.agent_slot_idx].clone()
-    )
+        )
 
     alpha_map = obj_out['alpha_map'] # [B, T, 1, H, W]
     # recon the observation
-    fg = obj_out['fg'] # [B, T, 3, H, W]
-    bg = mixture_out['bg'] # [B, T, 3, H, W]
+    fg = fg_out['fg'] # [B, T, 3, H, W]
+    bg = bg_out['bg'] # [B, T, 3, H, W]
     
-    _importance_map = obj_out['_importance_map'] # [B, T, 1, H, W] (sum over N) obj_out['_importance_map'].reshape(-1, 1, 64, 64) (not normalized)
-    ao_depth_map = torch.cat([agent_depth_map[:, :, None], _importance_map], dim=2) # [B, T, N + 1, H, W] 
-    ao_depth_map = ao_depth_map / (torch.sum(ao_depth_map, dim=2, keepdim=True) + 1e-5) # it works as a weight matrix
+    things = bg_out.copy()
+    things.update(fg_out.copy())
 
-    # learn agent depth map after certain steps of bg-fg training is done. recon.reshape(-1, 3, 64, 64)
-    agent_y_att = (mixture_out['masks'][:, :, model.agent_slot_idx] * mixture_out['comps'][:, :,model.agent_slot_idx].clone().detach())
-    ao_y_att = torch.cat([agent_y_att[:, :, None], obj_out['y_att']], dim=2) # [B, T, N+1, 3, 64, 64] ao_y_att.reshape(-1, 3, 64, 64)
-    agent_obj = (ao_y_att * ao_depth_map).sum(dim=2) #[B, T, 3, 64, 64] agent_obj.reshape(-1, 3, 64, 64)
-   
-    ao_att_hat = torch.cat([mixture_out['masks'][:, :, model.agent_slot_idx][:, :, None], obj_out['alpha_att_hat']], dim=2) 
-    ao_alpha_map = (ao_depth_map * ao_att_hat).sum(2)
-   
-    things = mixture_out.copy()
-    things.update(kypt_out.copy())
-    things.update(obj_out.copy())
-
-    if model.global_step >= ARCH.REJECT_ALPHA_UNTIL:
-        recon = ((1.0 - ao_alpha_map) * mixture_out['bg'] + agent_obj)
-    else:
-        recon = fg + (1 - alpha_map) * bg
+    recon = fg + (1 - alpha_map) * bg
 
     things.update(
         imgs=obs,
@@ -116,20 +93,13 @@ def  show_tracking_batch(model, obs, action, num):
         fg_boxes[:, t] = draw_boxes(log.fg[:, t], log.z_where[:, t], log.z_pres[:, t], log.ids[:, t])
         fg_proposals[:, t] = draw_boxes(log.fg[:, t], log.proposal[:, t], log.z_pres[:, t], log.ids[:, t])
     # (B, 3T, 3, H, W)
-    grid = torch.cat([log.imgs, log.recon, log.fg, fg_boxes, log.bg] +
-        # [m * c for (m, c) in zip(log.masks.permute(2,0,1,3,4,5), log.comps.permute(2,0,1,3,4,5))]
-        [log.gaussian_maps.repeat(1, 1, 3, 1, 1)]
-        + [m for m in log.masks.permute(2,0,1,3,4,5).repeat(1, 1, 1, 3, 1, 1)]
-        # + [c for c in log.comps.permute(2,0,1,3,4,5)]        
-        , dim=1)
-
+    grid = torch.cat([log.imgs, log.recon, log.fg, fg_boxes, log.bg], dim=1)
 
     grid = grid.view(-1, 3, H, W)
     # (3, H, W)
     grid = make_grid(grid, nrow=T, pad_value=1)
     # (B, T, 3, 3H, W)
-    gif = torch.cat([log.imgs, log.recon, log.fg, fg_boxes, log.bg ] +
-        [m * c for (m, c) in zip(log.masks.permute(2,0,1,3,4,5), log.comps.permute(2,0,1,3,4,5))], dim=-1)
+    gif = torch.cat([log.imgs, log.recon, log.fg, fg_boxes, log.bg], dim=-1)
 
     model.train()
     return grid, gif
@@ -165,56 +135,27 @@ def show_generation_batch(model, obs, action, num, cond_steps):
         model = model.module
     model.eval()
 
-    mixture_out = model.mixture_module.generate(
+    bg_out = model.bg_module.generate(
         obs, 
         action, 
-        cond_steps=cond_steps,
-        agent_slot=model.agent_slot_idx
-    )
+        cond_steps=cond_steps)
        
-    bg_indices = torch.tensor([k for k in range(ARCH.K) if k != model.agent_slot_idx], device=obs.device).long()
-
-    obs_diff = obs - mixture_out['bg']
+    obs_diff = obs - bg_out['bg']
     inpt = torch.cat([obs, obs_diff], dim=2)
 
-    A = action.size(-1)
-    if model.global_step < ARCH.KYPT_MIX_JOINT_UNTIL: 
-        action = mixture_out['enhanced_act']
-    else:
-        action = mixture_out['enhanced_act'].detach()
-
-    obj_out = model.obj_module.generate(obs=inpt, mix=mixture_out['bg'], cond_steps=cond_steps,
-        sample=True, z_agent=mixture_out['z_masks'][:, :, model.agent_slot_idx],
-        h_agent=mixture_out['h_masks'][:, :, model.agent_slot_idx].detach(),
-        enhanced_act=mixture_out['enhanced_act'].detach(),
-        agent_mask=mixture_out['masks'][:, :,model.agent_slot_idx].clone(),
-        agent_depth=z_agent_depth,
-        agent_kypt=kypt_out['obs_kypts']
-        )
-
-    _importance_map = obj_out['_importance_map'] # [B, T, 1, H, W] (sum over N) obj_out['_importance_map'].reshape(-1, 1, 64, 64) (not normalized)
-    ao_depth_map = torch.cat([agent_depth_map[:, :, None], _importance_map], dim=2) # [B, T, N + 1, H, W] 
-    ao_depth_map = ao_depth_map / (torch.sum(ao_depth_map, dim=2, keepdim=True) + 1e-5) # it works as a weight matrix
-
-    agent_y_att = (mixture_out['masks'][:, :, model.agent_slot_idx] * mixture_out['comps'][:, :,model.agent_slot_idx].clone().detach())
-    ao_y_att = torch.cat([agent_y_att[:, :, None], obj_out['y_att']], dim=2) # [B, T, N+1, 3, 64, 64] ao_y_att.reshape(-1, 3, 64, 64)
-    agent_obj = (ao_y_att * ao_depth_map).sum(dim=2) #[B, T, 3, 64, 64] agent_obj.reshape(-1, 3, 64, 64)
-   
-    ao_att_hat = torch.cat([mixture_out['masks'][:, :, model.agent_slot_idx][:, :, None], obj_out['alpha_att_hat']], dim=2) 
-    ao_alpha_map = (ao_depth_map * ao_att_hat).sum(2)
+    fg_out = model.fg_module.generate(obs=inpt, 
+        bg=bg_out['bg'], cond_steps=cond_steps
+    )
 
     alpha_map = obj_out['alpha_map'] # [B, T, 1, 64, 64]
-    fg = obj_out['fg'] # [B, T, 3, 64, 64]
-    bg = mixture_out['bg'] # [B, T, 3, 64, 64]
 
-    if model.global_step >= ARCH.REJECT_ALPHA_UNTIL:
-        recon = ((1.0 - ao_alpha_map) * mixture_out['bg'] + agent_obj)
-    else:
-        recon = fg + (1 - alpha_map) * bg
+    fg = fg_out['fg'] # [B, T, 3, 64, 64]
+    bg = bg_out['bg'] # [B, T, 3, 64, 64]
 
-    things = mixture_out.copy()
-    things.update(kypt_out.copy())
-    things.update(obj_out.copy())
+    recon = fg + (1 - alpha_map) * bg
+
+    things = bg_out.copy()
+    things.update(fg_out.copy())
     things.update(
         imgs=obs,
         recon=recon
@@ -226,16 +167,12 @@ def show_generation_batch(model, obs, action, num, cond_steps):
     for t in range(T): # draw bounding boxes over a sequence of images
         fg_boxes[:, t] = draw_boxes(log.fg[:, t], log.z_where[:, t], log.z_pres[:, t], log.ids[:, t])
         # (B, 3T, 3, H, W)
-    grid = torch.cat([log.imgs, log.recon, log.fg, fg_boxes, log.bg] +
-        [m * c for (m, c) in zip(log.masks.permute(2,0,1,3,4,5), log.comps.permute(2,0,1,3,4,5))] 
-        + [log.gaussian_maps.repeat(1, 1, 3, 1, 1)]
-        , dim=1)
+    grid = torch.cat([log.imgs, log.recon, log.fg, fg_boxes, log.bg], dim=1)
     grid = grid.view(-1, 3, H, W)
     # (3, H, W)
     grid = make_grid(grid, nrow=T, pad_value=1)
     # (B, T, 3, H, 3W)
-    gif = torch.cat([log.imgs, log.recon, log.fg, fg_boxes, log.bg] +
-        [m * c for (m, c) in zip(log.masks.permute(2,0,1,3,4,5), log.comps.permute(2,0,1,3,4,5))], dim=-1)
+    gif = torch.cat([log.imgs, log.recon, log.fg, fg_boxes, log.bg], dim=-1)
     add_boundary(gif[:, cond_steps:])
 
     # # (B, T, 3, num*H, N*W)
