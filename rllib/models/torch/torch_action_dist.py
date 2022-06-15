@@ -196,7 +196,9 @@ class TorchSquashedGaussian(TorchDistributionWrapper):
                  inputs: List[TensorType],
                  model: TorchModelV2,
                  low: float = -1.0,
-                 high: float = 1.0):
+                 high: float = 1.0,
+                 logstd_max: float = MAX_LOG_NN_OUTPUT,
+                 logstd_min: float = MIN_LOG_NN_OUTPUT):
         """Parameterizes the distribution via `inputs`.
 
         Args:
@@ -209,7 +211,7 @@ class TorchSquashedGaussian(TorchDistributionWrapper):
         # Split inputs into mean and log(std).
         mean, log_std = torch.chunk(self.inputs, 2, dim=-1)
         # Clip `scale` values (coming from NN) to reasonable values.
-        log_std = torch.clamp(log_std, MIN_LOG_NN_OUTPUT, MAX_LOG_NN_OUTPUT)
+        log_std = torch.clamp(log_std, logstd_min, logstd_max)
         std = torch.exp(log_std)
         self.dist = torch.distributions.normal.Normal(mean, std)
         assert np.all(np.less(low, high))
