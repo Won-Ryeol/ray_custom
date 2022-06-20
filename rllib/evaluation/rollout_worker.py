@@ -998,13 +998,13 @@ class RolloutWorker(ParallelIteratorWorker):
                     p[0].split('.')[0] == 'mixture_module' or 
                     p[0].split('.')[0] == 'keypoint_module' or
                     p[0].split('.')[0] == 'agent_depth' or
-                    # 'reward' in p[0].split('.')[0] or
-                    # 'actor' in p[0].split('.')[0] or
-                    # 'value' in p[0].split('.')[0] or
-                    # 'mask' in p[0].split('.')[0] or
-                    # 'comp' in p[0].split('.')[0] or
-                    # 'count' in p[0].split('.')[0] or
-                    # 'log_alpha' in p[0].split('.')[0] or
+                    'reward' if ARCH.LOAD_AGENT else '#' in p[0].split('.')[0] or
+                    'actor'  if ARCH.LOAD_AGENT else '#' in p[0].split('.')[0] or
+                    'value' if ARCH.LOAD_AGENT else '#' in p[0].split('.')[0] or
+                    'mask' if ARCH.LOAD_AGENT else '#' in p[0].split('.')[0] or
+                    'comp' if ARCH.LOAD_AGENT else '#' in p[0].split('.')[0] or
+                    'count' if ARCH.LOAD_AGENT else '#' in p[0].split('.')[0] or
+                    'log_alpha' if ARCH.LOAD_AGENT else '#' in p[0].split('.')[0] or
                     # p[0].split('.')[0] == 'reward' or
                     # p[0].split('.')[0] == 'actor' or
                     # p[0].split('.')[0] == 'value' or
