@@ -387,7 +387,7 @@ class TorchPolicy(Policy):
                 loss_out[i].backward(retain_graph=(i < len(self._optimizers) - 1))
             except:
                 continue
-            grad_info.update(self.extra_grad_process(opt, loss_out[i]))
+            grad_info.update(self.extra_grad_process(opt, loss_out[i], i))
 
             grads = []
             # Note that return values are just references;
@@ -492,7 +492,7 @@ class TorchPolicy(Policy):
 
     @DeveloperAPI
     def extra_grad_process(self, optimizer: "torch.optim.Optimizer",
-                           loss: TensorType):
+                           loss: TensorType, i: int):
         """Called after each optimizer.zero_grad() + loss.backward() call.
 
         Called for each self._optimizers/loss-value pair.
