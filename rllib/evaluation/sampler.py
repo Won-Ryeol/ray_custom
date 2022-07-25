@@ -1084,10 +1084,10 @@ def _process_observations_w_trajectory_view_api(
                     agent_done, values_dict)
 
             if not agent_done:
-                vis_info = worker.env.render(mode='rgb_array')
+                # vis_info = worker.env.render(mode='rgb_array')
                 item = PolicyEvalData(
-                    # env_id, agent_id, filtered_obs, agent_infos, None
-                    env_id, agent_id, filtered_obs, vis_info, None #* add visual observation as info.
+                    env_id, agent_id, filtered_obs, agent_infos, None
+                    # env_id, agent_id, filtered_obs, vis_info, None #* add visual observation as info.
                     if last_observation is None else
                     episode.rnn_state_for(agent_id), None
                     if last_observation is None else
@@ -1187,11 +1187,11 @@ def _process_observations_w_trajectory_view_api(
                         new_episode, agent_id, env_id, policy_id,
                         new_episode.length - 1, filtered_obs)
 
-                    vis_info = worker.env.render(mode='rgb_array')
+                    # vis_info = worker.env.render(mode='rgb_array')
                     item = PolicyEvalData(
                         env_id, agent_id, filtered_obs,
                         # episode.last_info_for(agent_id) or {},
-                        vis_info,
+                        np.zeros((1, ARCH.ACTION_DIM)),
                         episode.rnn_state_for(agent_id), None, 0.0)
                     to_eval[policy_id].append(item)
 
@@ -1330,7 +1330,8 @@ def _do_policy_eval_w_trajectory_view_api(
         policy: Policy = _get_or_raise(policies, policy_id)
         input_dict = _sample_collector.get_inference_input_dict(policy_id)
         # TODO (chmin): add rendering info here.
-        input_dict['vis'] = eval_data[0].info
+        input_dict['modified_action'] = eval_data[0].info if eval_data[0].info is not None else np.zeros(
+            (1, input_dict['state_out_14'].shape[-1]))
 
         eval_results[policy_id] = \
             policy.compute_actions_from_input_dict(
