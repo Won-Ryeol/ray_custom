@@ -431,6 +431,8 @@ class RolloutWorker(ParallelIteratorWorker):
         self.policy_map: Dict[PolicyID, Policy] = None
         self.preprocessors: Dict[PolicyID, Preprocessor] = None
 
+        self.trigger = False
+
         # set numpy and python seed
         if seed is not None:
             np.random.seed(seed)
@@ -986,39 +988,62 @@ class RolloutWorker(ParallelIteratorWorker):
     def restore(self, objs: str) -> None:
         objs = pickle.loads(objs)
         self.sync_filters(objs["filters"])
-        for pid, state in objs["state"].items():
-            # TODO (chmin): add parameter filtering here.
-            # checkpoint = OrderedDict(filter(lambda p: p[0].split('.')[0] == 'kypt_detector', checkpoint.items()))
-            if ARCH.FILTER_GATSBI_AGENT and not CFG.NOT_GATSBI:
-                state = OrderedDict(filter(lambda p: (
-                    # (p[0].split('.')[0] == 'obj_module' and p[0].split('.')[1] != 'extract_global_agent_feature' and
-                #    (p[0].split('.')[2] != 'uncertain_attention' if len(p[0].split('.')) >=3 
-                #     else p[0].split('.')[0] == 'obj_module')  and 
-                    p[0].split('.')[0] == 'obj_module' or
-                    p[0].split('.')[0] == 'mixture_module' or 
-                    p[0].split('.')[0] == 'keypoint_module' or
-                    p[0].split('.')[0] == 'agent_depth' or
-                    # 'reward'  in p[0].split('.')[0]  or 
-                    # 'actor'  in p[0].split('.')[0]  or 
-                    # 'value'  in p[0].split('.')[0]  or 
-                    # 'mask'  in p[0].split('.')[0]  or 
-                    # 'comp'  in p[0].split('.')[0]  or 
-                    # 'count'  in p[0].split('.')[0]  or 
-                    # 'log_alpha'  in p[0].split('.')[0]  or 
-                    # p[0].split('.')[0] == 'reward' or
-                    # p[0].split('.')[0] == 'actor' or
-                    # p[0].split('.')[0] == 'value' or
-                    # p[0].split('.')[0] == 'value_targ' or
-                    p[0].split('.')[0] == 'occl_metric'
-                    # p[0].split('.')[0] == '_optimizer_variables'
-                    ), state.items()))
-                prev_state = self.policy_map[pid].get_state()
-                prev_state.update(state)
-                state = prev_state
-            # checkpoint = OrderedDict({k[14:]: v for k, v in checkpoint.items()})  # substract 'kypt_detector.'
-            # network.kypt_detector.load_state_dict(checkpoint)
 
-            self.policy_map[pid].set_state(state)
+        if not self.trigger:
+            for pid, state in objs["state"].items():
+                # TODO (chmin): add parameter filtering here.
+                # checkpoint = OrderedDict(filter(lambda p: p[0].split('.')[0] == 'kypt_detector', checkpoint.items()))
+                if ARCH.FILTER_GATSBI_AGENT and not CFG.NOT_GATSBI:
+                    state = OrderedDict(filter(lambda p: (
+                        # (p[0].split('.')[0] == 'obj_module' and p[0].split('.')[1] != 'extract_global_agent_feature' and
+                    #    (p[0].split('.')[2] != 'uncertain_attention' if len(p[0].split('.')) >=3 
+                    #     else p[0].split('.')[0] == 'obj_module')  and 
+                        # p[0].split('.')[0] == 'obj_module' or
+                        p[0].split('.')[0] == 'mixture_module' or
+                        p[0].split('.')[0] == 'keypoint_module' or
+                        p[0].split('.')[0] == 'agent_depth'
+                        # 'reward'  in p[0].split('.')[0]  or 
+                        # 'actor'  in p[0].split('.')[0]  or 
+                        # 'value'  in p[0].split('.')[0]  or 
+                        # 'mask'  in p[0].split('.')[0]  or 
+                        # 'comp'  in p[0].split('.')[0]  or 
+                        # 'count'  in p[0].split('.')[0]  or 
+                        # 'log_alpha'  in p[0].split('.')[0]  or 
+                        # p[0].split('.')[0] == 'reward' or
+                        # p[0].split('.')[0] == 'actor' or
+                        # p[0].split('.')[0] == 'value' or
+                        # p[0].split('.')[0] == 'value_targ' or
+                        # p[0].split('.')[0] == 'occl_metric'
+                        # p[0].split('.')[0] == '_optimizer_variables'
+                        ), state.items()))
+                    prev_state = self.policy_map[pid].get_state()
+                    prev_state.update(state)
+                    state = prev_state
+                # checkpoint = OrderedDict({k[14:]: v for k, v in checkpoint.items()})  # substract 'kypt_detector.'
+                # network.kypt_detector.load_state_dict(checkpoint)
+                self.policy_map[pid].set_state(state)
+
+        if self.trigger:
+            self.sync_filters(objs["filters"])
+            for pid, state in objs["state"].items():
+                # TODO (chmin): add parameter filtering here.
+                # checkpoint = OrderedDict(filter(lambda p: p[0].split('.')[0] == 'kypt_detector', checkpoint.items()))
+                if ARCH.FILTER_GATSBI_AGENT and not CFG.NOT_GATSBI:
+                    state = OrderedDict(filter(lambda p: (
+                    #     else p[0].split('.')[0] == 'obj_module')  and 
+                        p[0].split('.')[0] == 'obj_module'
+                        # p[0].split('.')[0] == 'mixture_module' or 
+                        ), state.items()))
+                    prev_state = self.policy_map[pid].get_state()
+                    prev_state.update(state)
+                    state = prev_state
+                # checkpoint = OrderedDict({k[14:]: v for k, v in checkpoint.items()})  # substract 'kypt_detector.'
+                # network.kypt_detector.load_state_dict(checkpoint)
+
+                self.policy_map[pid].set_state(state)
+        
+        self.trigger = True
+
 
     @DeveloperAPI
     def set_global_vars(self, global_vars: dict) -> None:
